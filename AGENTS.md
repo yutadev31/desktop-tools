@@ -12,7 +12,7 @@
 - `crates/rubar/`: The `rubar` application. Its `src/main.rs` is the entry point; `src/app.rs` manages the lifecycle; `src/config.rs` loads configuration; `src/render.rs` renders the bar; `src/widget/` contains widgets; and `src/provider/` contains platform and service integrations. See `crates/rubar/README.md` for usage and configuration.
 - `crates/shell-surface/`: Shared surface and input abstraction. `src/lib.rs` defines the API, and `src/backend/` contains Wayland and X11 backends.
 - `crates/shot/`: The `shot` screenshot tool. `src/lib.rs` exposes capture functionality; `src/backend/` contains Wayland, X11, and Windows backends. See `crates/shot/README.md` for usage.
-- `flake.nix`: Nix development shell and package definitions for `cpst`, `rubar`, and `shot`.
+- `flake.nix`: Nix inputs and Blueprint configuration. `nix/packages/` defines application packages, `nix/build-package.nix` shares Rust packaging, and `nix/devshell.nix` defines the development shell.
 - `.github/workflows/ci.yml`: Workspace checks and release workflows for `cpst`, `rubar`, and `shot`.
 
 When adding software, give it its own crate under `crates/` and register it in the root workspace manifest. Keep application-specific behavior in its application crate; move code into a shared crate when it has a clear reusable purpose. Update affected documentation, Nix definitions, and CI or release workflows as needed.

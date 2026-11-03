@@ -1,20 +1,23 @@
 {
   "nodes": {
-    "flake-utils": {
+    "blueprint": {
       "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
         "systems": "systems"
       },
       "locked": {
-        "lastModified": 1791914995,
-        "narHash": "sha256-Zf/xfQEAasnwnmEfHqW/4hjDE/s44yn2hD4RuVIZRjA=",
+        "lastModified": 1791920352,
+        "narHash": "sha256-Zbd0CGR2Dh9USbYglGXQ09FJXxxKkD5w5vi99nlz1yE=",
         "owner": "numtide",
-        "repo": "flake-utils",
-        "rev": "b7a79d3fea1e214f6d668d521cecec0c01e26544",
+        "repo": "blueprint",
+        "rev": "2bf123541bd5024046f32299c9f8a6cc6bdd8a9f",
         "type": "github"
       },
       "original": {
         "owner": "numtide",
-        "repo": "flake-utils",
+        "repo": "blueprint",
         "type": "github"
       }
     },
@@ -52,7 +55,7 @@
     },
     "root": {
       "inputs": {
-        "flake-utils": "flake-utils",
+        "blueprint": "blueprint",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay"
       }
