@@ -1,6 +1,6 @@
 # Rust コーディングスタイル
 
-この規約は workspace の全6 crate（cpst、desktop-icons、rubar、rumenu、shell-surface、shot）と、今後追加する crate に適用する。CLI、設定形式、実行時の振る舞いを保ちながら、読みやすさ、保守性、実行時性能を優先する。
+この規約は workspace の全5 crate（desktop-icons、rubar、rumenu、shell-surface、shot）と、今後追加する crate に適用する。CLI、設定形式、実行時の振る舞いを保ちながら、読みやすさ、保守性、実行時性能を優先する。
 
 ## 書式と配置
 
@@ -106,7 +106,6 @@ cargo test --workspace --locked
 
 ## 今回の公開 API 変更
 
-- `cpst::{copy, paste, run_daemon}` は `String` の代わりに `cpst::Error` を返す。ローカル操作の原因は `std::error::Error::source` で取得できる。文字列が必要なら `to_string()` を使う。別プロセスの Linux daemon が返す失敗はプロトコル上のメッセージを保持する。
 - `shell_surface::Shell::render` と `shell_surface::Backend::run` は `shell_surface::Error` を返す。描画エラーは `Error::Render { surface, source }`、バックエンドの失敗は `Error::Backend { backend, source }` として扱う。アプリ独自のエラーは `source` に格納し、元の型を保持する。
 - `shot::Error::ClipboardFailed` は原因の `arboard::Error` を保持するタプル variant になった。パターンは `ClipboardFailed(source)` または `ClipboardFailed(_)` とする。PNG のデコードエラーは `Error::Image` で返す。
 

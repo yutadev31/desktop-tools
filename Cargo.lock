@@ -466,16 +466,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cpst"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "clap",
- "image",
- "thiserror",
-]
-
-[[package]]
 name = "crc32fast"
 version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

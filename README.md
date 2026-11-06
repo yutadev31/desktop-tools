@@ -9,7 +9,6 @@ All software in this repository is currently in beta.
 | [`rubar`](crates/rubar/README.md) | Configurable status bar for Wayland and X11. |
 | [`rumenu`](crates/rumenu/README.md) | Application launcher for X11 and Wayland compositors with `wlr-layer-shell`. |
 | [`shot`](crates/shot/README.md) | Monitor screenshots saved as PNG and copied to the clipboard. |
-| [`cpst`](crates/cpst/README.md) | Clipboard commands: `cpy` copies input and `pst` pastes clipboard contents. |
 | [`shell-surface`](crates/shell-surface/) | Shared Wayland and X11 surface and input abstraction. |
 | [`desktop-icons`](crates/desktop-icons/) | Shared desktop icon lookup and PNG/SVG decoding. |
 
@@ -30,7 +29,7 @@ cargo run -p rumenu
 cargo run -p shot -- --help
 ```
 
-The Nix flake uses [Blueprint](https://github.com/numtide/blueprint). Package definitions live in `nix/packages/`, shared Rust packaging in `nix/build-package.nix`, and the development shell in `nix/devshell.nix`. It provides packages for `cpst`, `rubar`, `rumenu`, and `shot`. For example:
+The Nix flake uses [Blueprint](https://github.com/numtide/blueprint). Package definitions live in `nix/packages/`, shared Rust packaging in `nix/build-package.nix`, and the development shell in `nix/devshell.nix`. It provides packages for `rubar`, `rumenu`, and `shot`. For example:
 
 ```sh
 nix build .#rubar

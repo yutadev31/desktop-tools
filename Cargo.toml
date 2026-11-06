@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/cpst", "crates/desktop-icons", "crates/rubar", "crates/rumenu", "crates/shell-surface", "crates/shot"]
+members = ["crates/desktop-icons", "crates/rubar", "crates/rumenu", "crates/shell-surface", "crates/shot"]
 
 [workspace.package]
 version = "0.6.0"
