@@ -17,9 +17,8 @@ use zbus::{
     proxy::CacheProperties,
 };
 
-use crate::{config::StyleConfig, widget::TrayIcon};
-
 use super::{MenuPosition, TrayItem, TrayProvider, menu};
+use crate::{config::StyleConfig, widget::TrayIcon};
 
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const WATCHER_INTERFACE: &str = "org.kde.StatusNotifierWatcher";
@@ -62,36 +61,34 @@ impl Drop for MenuOpenGuard {
 }
 
 impl Sni {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, String> {
         let (sender, receiver) = mpsc::channel();
         let items = Arc::new(Mutex::new(HashMap::new()));
         let worker_items = Arc::clone(&items);
         thread::Builder::new()
             .name("rubar-sni".to_string())
-            .spawn(move || run_dbus(worker_items, sender))
-            .expect("failed to start SNI worker");
-        Self {
+            .spawn(move || run_dbus(&worker_items, &sender))
+            .map_err(|error| format!("failed to start SNI worker: {error}"))?;
+        Ok(Self {
             items,
             receiver,
             menu_open: Arc::new(AtomicBool::new(false)),
-        }
+        })
     }
 
     fn item(&self, id: &str) -> Option<SniItem> {
-        self.items
-            .lock()
-            .expect("SNI item lock poisoned")
-            .get(id)
-            .cloned()
+        lock_items(&self.items).get(id).cloned()
     }
 }
 
 impl TrayProvider for Sni {
     fn poll_items(&mut self) -> Option<Vec<TrayItem>> {
         let mut latest = None;
+
         while let Ok(items) = self.receiver.try_recv() {
             latest = Some(items);
         }
+
         latest
     }
 
@@ -99,6 +96,7 @@ impl TrayProvider for Sni {
         let Some(item) = self.item(id) else {
             return;
         };
+
         let method = if secondary {
             "SecondaryActivate"
         } else {
@@ -117,6 +115,7 @@ impl TrayProvider for Sni {
                 proxy.call_method(method, &(0_i32, 0_i32))?;
                 Ok::<_, zbus::Error>(())
             })();
+
             if let Err(error) = result {
                 tracing::warn!("rubar: could not call tray item {method}: {error}");
             }
@@ -127,20 +126,23 @@ impl TrayProvider for Sni {
         let Some(item) = self.item(id) else {
             return;
         };
+
         if self.menu_open.swap(true, Ordering::AcqRel) {
             return;
         }
+
         let style = style.clone();
         let menu_open = Arc::clone(&self.menu_open);
+
         thread::spawn(move || {
             let _guard = MenuOpenGuard(menu_open);
             let identity = format!("{}{}", item.service, item.path);
 
             if let Err(error) = menu::open(
-                item,
+                &item,
                 position.button_left,
                 position.surface_width,
-                position.output,
+                position.output.as_ref(),
                 &style,
             ) {
                 tracing::warn!("rubar: could not open tray menu {identity}: {error}");
@@ -162,6 +164,8 @@ impl Watcher {
 
 #[interface(name = "org.kde.StatusNotifierWatcher")]
 impl Watcher {
+    // zbus injects owned header and emitter values into interface methods.
+    #[allow(clippy::needless_pass_by_value)]
     fn register_status_notifier_item(
         &mut self,
         service_or_path: &str,
@@ -173,10 +177,12 @@ impl Watcher {
         } else {
             "/StatusNotifierItem".to_string()
         };
+
         let service = if service_or_path.starts_with('/') {
-            header
-                .sender()
-                .map_or_else(|| service_or_path.to_string(), |s| s.to_string())
+            header.sender().map_or_else(
+                || service_or_path.to_string(),
+                std::string::ToString::to_string,
+            )
         } else {
             service_or_path.to_string()
         };
@@ -189,46 +195,55 @@ impl Watcher {
             needs_attention: false,
         };
 
-        self.items
-            .lock()
-            .expect("SNI item lock poisoned")
-            .insert(service.clone(), item);
+        lock_items(&self.items).insert(service.clone(), item);
         self.publish();
+
         if let Err(error) = zbus::block_on(Self::status_notifier_item_registered(
             &emitter,
             &format!("{service}{path}"),
         )) {
             tracing::warn!("rubar: could not notify tray item registration: {error}");
         }
+
         let items = Arc::clone(&self.items);
         let sender = self.sender.clone();
-        thread::spawn(move || watch_item(service, path, items, sender));
+        thread::spawn(move || watch_item(&service, &path, &items, &sender));
     }
 
     /// Hosts may register with the watcher as well. rubar is the host, so the
     /// registration is intentionally a no-op while the standard method is
     /// still exposed for clients that expect it.
-    fn register_status_notifier_host(&mut self, _service: &str) {}
+    // zbus interface methods require a receiver even for constant protocol responses.
+    #[allow(clippy::unused_self)]
+    fn register_status_notifier_host(&mut self, service: &str) {
+        tracing::debug!(service, "tray host registered");
+    }
 
     #[zbus(property)]
+    // zbus interface methods require a receiver even for constant protocol responses.
+    #[allow(clippy::unused_self)]
     fn protocol_version(&self) -> u32 {
         0
     }
+
     #[zbus(property)]
+    // zbus interface methods require a receiver even for constant protocol responses.
+    #[allow(clippy::unused_self)]
     fn is_status_notifier_host_registered(&self) -> bool {
         true
     }
+
     #[zbus(property)]
     fn registered_status_notifier_items(&self) -> Vec<String> {
-        self.items
-            .lock()
-            .expect("SNI item lock poisoned")
+        lock_items(&self.items)
             .values()
             .map(|item| format!("{}{}", item.service, item.path))
             .collect()
     }
 
     #[zbus(property)]
+    // zbus interface methods require a receiver even for constant protocol responses.
+    #[allow(clippy::unused_self)]
     fn registered_status_notifier_hosts(&self) -> Vec<String> {
         vec!["rubar".to_string()]
     }
@@ -238,6 +253,7 @@ impl Watcher {
         emitter: &SignalEmitter<'_>,
         service: &str,
     ) -> zbus::Result<()>;
+
     #[zbus(signal)]
     async fn status_notifier_item_unregistered(
         emitter: &SignalEmitter<'_>,
@@ -245,9 +261,9 @@ impl Watcher {
     ) -> zbus::Result<()>;
 }
 
-fn run_dbus(items: Items, sender: mpsc::Sender<Vec<TrayItem>>) {
+fn run_dbus(items: &Items, sender: &mpsc::Sender<Vec<TrayItem>>) {
     let watcher = Watcher {
-        items: Arc::clone(&items),
+        items: Arc::clone(items),
         sender: sender.clone(),
     };
     let Ok(connection) = ConnectionBuilder::session()
@@ -269,6 +285,7 @@ fn run_dbus(items: Items, sender: mpsc::Sender<Vec<TrayItem>>) {
             return;
         }
     };
+
     let bus = match Proxy::new(
         &connection,
         "org.freedesktop.DBus",
@@ -282,6 +299,7 @@ fn run_dbus(items: Items, sender: mpsc::Sender<Vec<TrayItem>>) {
             return;
         }
     };
+
     let owner_changes = match bus.receive_signal("NameOwnerChanged") {
         Ok(signals) => signals,
         Err(error) => {
@@ -289,6 +307,7 @@ fn run_dbus(items: Items, sender: mpsc::Sender<Vec<TrayItem>>) {
             return;
         }
     };
+
     for message in owner_changes {
         let (name, old_owner, new_owner) =
             match message.body().deserialize::<(String, String, String)>() {
@@ -299,14 +318,18 @@ fn run_dbus(items: Items, sender: mpsc::Sender<Vec<TrayItem>>) {
                     continue;
                 }
             };
+
         // A disappearing service has an old owner and no new owner. Ignore
         // acquisitions and ownership changes where another owner takes over.
         if old_owner.is_empty() || !new_owner.is_empty() {
             continue;
         }
-        let removed = items.lock().expect("SNI item lock poisoned").remove(&name);
+
+        let removed = lock_items(items).remove(&name);
+
         if let Some(item) = removed {
-            publish_items(&items, &sender);
+            publish_items(items, sender);
+
             if let Err(error) = zbus::block_on(Watcher::status_notifier_item_unregistered(
                 watcher_ref.signal_emitter(),
                 &format!("{}{}", item.service, item.path),
@@ -317,30 +340,31 @@ fn run_dbus(items: Items, sender: mpsc::Sender<Vec<TrayItem>>) {
     }
 }
 
-fn watch_item(service: String, path: String, items: Items, sender: mpsc::Sender<Vec<TrayItem>>) {
+fn watch_item(service: &str, path: &str, items: &Items, sender: &mpsc::Sender<Vec<TrayItem>>) {
     match Connection::session() {
-        Ok(connection) => match item_proxy(&connection, &service, &path) {
-            Ok(proxy) => update_icon(&proxy, &service, &items, &sender),
+        Ok(connection) => match item_proxy(&connection, service, path) {
+            Ok(proxy) => update_icon(&proxy, service, items, sender),
             Err(error) => {
-                tracing::warn!("rubar: could not create tray item proxy for {service}: {error}")
+                tracing::warn!("rubar: could not create tray item proxy for {service}: {error}");
             }
         },
         Err(error) => tracing::warn!("rubar: could not connect to tray item {service}: {error}"),
     }
+
     for signal in ["NewIcon", "NewAttentionIcon", "NewStatus"] {
-        let service = service.clone();
-        let path = path.clone();
-        let items = Arc::clone(&items);
+        let service = service.to_string();
+        let path = path.to_string();
+        let items = Arc::clone(items);
         let sender = sender.clone();
-        thread::spawn(move || watch_item_signal(service, path, items, sender, signal));
+        thread::spawn(move || watch_item_signal(&service, &path, &items, &sender, signal));
     }
 }
 
 fn watch_item_signal(
-    service: String,
-    path: String,
-    items: Items,
-    sender: mpsc::Sender<Vec<TrayItem>>,
+    service: &str,
+    path: &str,
+    items: &Items,
+    sender: &mpsc::Sender<Vec<TrayItem>>,
     signal: &'static str,
 ) {
     let connection = match Connection::session() {
@@ -351,13 +375,14 @@ fn watch_item_signal(
         }
     };
 
-    let proxy = match item_proxy(&connection, &service, &path) {
+    let proxy = match item_proxy(&connection, service, path) {
         Ok(proxy) => proxy,
         Err(error) => {
             tracing::warn!("rubar: could not create tray item proxy for {service}: {error}");
             return;
         }
     };
+
     let mut signals = match proxy.receive_signal(signal) {
         Ok(signals) => signals,
         Err(error) => {
@@ -367,8 +392,9 @@ fn watch_item_signal(
             return;
         }
     };
+
     while signals.next().is_some() {
-        update_icon(&proxy, &service, &items, &sender);
+        update_icon(&proxy, service, items, sender);
     }
 }
 
@@ -417,26 +443,31 @@ fn update_icon(
         .get_property::<String>("Status")
         .is_ok_and(|status| status == "NeedsAttention");
 
-    if let Some(item) = items
-        .lock()
-        .expect("SNI item lock poisoned")
-        .get_mut(service)
-    {
+    if let Some(item) = lock_items(items).get_mut(service) {
         item.icon = icon;
         item.attention_icon = attention_icon;
         item.needs_attention = needs_attention;
     }
+
     publish_items(items, sender);
 }
 
+fn lock_items(items: &Items) -> std::sync::MutexGuard<'_, HashMap<String, SniItem>> {
+    items.lock().unwrap_or_else(|error| {
+        // HashMap operations leave valid owned entries when unwinding. Retain
+        // the last snapshot and report the failed worker before continuing.
+        tracing::error!("SNI item lock poisoned: {error}");
+        error.into_inner()
+    })
+}
+
 fn publish_items(items: &Items, sender: &mpsc::Sender<Vec<TrayItem>>) {
-    let mut current = items
-        .lock()
-        .expect("SNI item lock poisoned")
+    let mut current = lock_items(items)
         .values()
         .map(SniItem::snapshot)
         .collect::<Vec<_>>();
     current.sort_by(|a, b| a.id.cmp(&b.id));
+
     if let Err(error) = sender.send(current) {
         tracing::debug!("tray receiver was dropped: {error}");
     }
@@ -446,26 +477,31 @@ fn choose_icon(pixmaps: &[(i32, i32, Vec<u8>)], target: i32) -> Option<TrayIcon>
     let valid = pixmaps.iter().filter(|(w, h, bytes)| {
         *w > 0
             && *h > 0
-            && (*w as usize)
-                .checked_mul(*h as usize)
+            && (w.cast_unsigned() as usize)
+                .checked_mul(h.cast_unsigned() as usize)
                 .and_then(|size| size.checked_mul(4))
                 .is_some_and(|size| bytes.len() == size)
     });
     let (width, height, bytes) = valid.min_by_key(|(w, h, _)| (w.max(h) - target).abs())?;
     let mut pixels = Vec::with_capacity(bytes.len());
+
     for argb in bytes.as_chunks::<4>().0 {
-        let alpha = argb[0] as u16;
+        let alpha = u16::from(argb[0]);
 
         pixels.extend_from_slice(&[
-            ((argb[1] as u16 * alpha) / 255) as u8,
-            ((argb[2] as u16 * alpha) / 255) as u8,
-            ((argb[3] as u16 * alpha) / 255) as u8,
+            u8::try_from((u16::from(argb[1]) * alpha) / 255)
+                .expect("premultiplied channel is at most 255"),
+            u8::try_from((u16::from(argb[2]) * alpha) / 255)
+                .expect("premultiplied channel is at most 255"),
+            u8::try_from((u16::from(argb[3]) * alpha) / 255)
+                .expect("premultiplied channel is at most 255"),
             argb[0],
         ]);
     }
+
     Some(TrayIcon {
-        width: *width as u32,
-        height: *height as u32,
+        width: width.cast_unsigned(),
+        height: height.cast_unsigned(),
         pixels,
     })
 }
@@ -474,6 +510,7 @@ fn load_named_icon(name: &str, target: u32) -> Option<TrayIcon> {
     if name.is_empty() || Path::new(name).components().count() != 1 {
         return None;
     }
+
     desktop_icons::Loader::new(["hicolor", "Adwaita", "Papirus", "breeze"]).load(
         name,
         target,

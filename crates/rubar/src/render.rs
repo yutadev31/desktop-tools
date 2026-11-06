@@ -1,13 +1,12 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, error::Error};
 
 use cosmic_text::{
     Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
     Wrap,
 };
+pub use desktop_icons::Icon as RenderIcon;
 use tiny_skia::{Color, Paint, Pixmap, Rect, Transform};
 use unicode_segmentation::UnicodeSegmentation;
-
-pub use desktop_icons::Icon as RenderIcon;
 
 use crate::{
     color::parse_rgba,
@@ -55,18 +54,25 @@ pub struct RenderButton {
 
 pub trait RenderWidget {
     fn content(&mut self) -> RenderContent;
+
     fn reload_config(&mut self, _config: &Config) {}
+
     fn poll_changed(&mut self) -> bool {
         false
     }
+
     fn content_spacing(&self) -> Option<u32> {
         None
     }
+
     fn set_monitor_name(&mut self, _monitor_name: Option<&str>) {}
+
     fn on_click(&mut self, _button: MouseButton, _item: usize) {}
+
     fn on_click_at(&mut self, button: MouseButton, item: usize, _context: ClickContext<'_>) {
         self.on_click(button, item);
     }
+
     fn on_scroll(&mut self, _direction: ScrollDirection, _item: usize) {}
 }
 
@@ -150,8 +156,9 @@ impl BarRenderer {
         left: &mut [Box<dyn RenderWidget>],
         center: &mut [Box<dyn RenderWidget>],
         right: &mut [Box<dyn RenderWidget>],
-    ) -> Vec<u8> {
-        let mut pixmap = Pixmap::new(width, height).expect("valid bar dimensions");
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut pixmap =
+            Pixmap::new(width, height).ok_or("invalid bar dimensions or pixel buffer size")?;
         let metrics = RenderMetrics {
             width,
             height,
@@ -171,10 +178,10 @@ impl BarRenderer {
 
         // tiny-skia stores RGBA pixels; shell-surface expects native ARGB8888.
         let (pixels, _) = pixmap.data().as_chunks::<4>();
-        pixels
+        Ok(pixels
             .iter()
             .flat_map(|rgba| native_argb8888(*rgba))
-            .collect()
+            .collect())
     }
 
     pub fn handle_click(
@@ -240,6 +247,7 @@ impl BarRenderer {
                 )
             }))
             .fold(0_i32, i32::saturating_add);
+
         let mut cursor = match alignment {
             Alignment::Left => layout_i32(self.config.bar_padding),
             Alignment::Center => (layout_i32(metrics.width) - total_width) / 2,
@@ -249,14 +257,18 @@ impl BarRenderer {
         if matches!(alignment, Alignment::Right) {
             items.reverse();
         }
+
         for (position, item) in items.iter().enumerate() {
             let width = item.width();
+
             let (left, right) = match alignment {
                 Alignment::Right => (cursor.saturating_sub(width), cursor),
                 Alignment::Left | Alignment::Center => (cursor, cursor.saturating_add(width)),
             };
+
             self.draw_prepared_item(pixmap, item, metrics, alignment, left, right);
             let spacing = next_spacing_for_position(&items, position, widget_spacing, item_spacing);
+
             cursor = match alignment {
                 Alignment::Right => left.saturating_sub(spacing),
                 Alignment::Left | Alignment::Center => right.saturating_add(spacing),
@@ -270,8 +282,10 @@ impl BarRenderer {
         metrics: &RenderMetrics,
     ) -> Vec<PreparedItem> {
         let mut items = Vec::with_capacity(widgets.len());
+
         for (index, widget) in widgets.iter_mut().enumerate() {
             let content = widget.content();
+
             let buttons = match content {
                 RenderContent::Text(text) => vec![RenderButton {
                     text: Some(text),
@@ -283,15 +297,17 @@ impl BarRenderer {
                     background: None,
                     indicator: None,
                 }],
-
                 RenderContent::Buttons(buttons) => buttons,
             };
+
             let content_spacing = widget.content_spacing().map(layout_i32);
+
             for (button_index, mut button) in buttons.into_iter().enumerate() {
                 let button_padding = layout_i32(button.padding.unwrap_or(self.config.item_padding));
                 let button_padding = button.max_width.map_or(button_padding, |max_width| {
                     button_padding.min(layout_i32(max_width) / 2)
                 });
+
                 let text_width = if let Some(text) = button.text.take() {
                     let (text, width) = if let Some(max_width) = button.max_width {
                         let available =
@@ -311,12 +327,14 @@ impl BarRenderer {
                         );
                         (text, width)
                     };
+
                     button.text = Some(text);
 
                     width
                 } else {
                     0
                 };
+
                 items.push(PreparedItem {
                     widget_index: index,
                     button_index,
@@ -327,6 +345,7 @@ impl BarRenderer {
                 });
             }
         }
+
         items
     }
 
@@ -341,13 +360,12 @@ impl BarRenderer {
     ) {
         let button = &item.button;
         let bold = button.bold.unwrap_or(self.config.bold);
-        let button_color = button
-            .color
-            .map(|[r, g, b, a]| TextColor::rgba(r, g, b, a))
-            .unwrap_or(metrics.text_color);
+        let button_color = button.color.map_or(metrics.text_color, |[r, g, b, a]| {
+            TextColor::rgba(r, g, b, a)
+        });
 
-        self.draw_button_background(pixmap, left, right, metrics.height, button.background);
-        self.draw_button_indicator(pixmap, left, right, metrics.height, button.indicator);
+        Self::draw_button_background(pixmap, left, right, metrics.height, button.background);
+        Self::draw_button_indicator(pixmap, left, right, metrics.height, button.indicator);
         self.current_hitboxes.push(Hitbox::new(
             left,
             right,
@@ -356,6 +374,7 @@ impl BarRenderer {
             item.widget_index,
             item.button_index,
         ));
+
         if let Some(text) = button.text.as_deref() {
             let text_right = match alignment {
                 Alignment::Right => right.saturating_sub(item.padding),
@@ -366,6 +385,7 @@ impl BarRenderer {
 
             self.draw_text(pixmap, text, text_right, metrics, button_color, bold);
         }
+
         if let Some(icon) = button.icon.as_ref() {
             let icon_x = match alignment {
                 Alignment::Right => right
@@ -373,12 +393,15 @@ impl BarRenderer {
                     .saturating_sub(layout_i32(icon.width)),
                 Alignment::Left | Alignment::Center => left.saturating_add(item.padding),
             };
-            self.draw_icon(pixmap, icon, icon_x);
+
+            Self::draw_icon(pixmap, icon, icon_x);
         }
     }
 
+    // cosmic-text and tiny-skia use f32 layout; integer raster positions require rounding.
+
+    #[allow(clippy::cast_precision_loss)]
     fn draw_button_background(
-        &self,
         pixmap: &mut Pixmap,
         left: i32,
         right: i32,
@@ -388,6 +411,7 @@ impl BarRenderer {
         let Some([r, g, b, a]) = background else {
             return;
         };
+
         if right <= left || height == 0 {
             return;
         }
@@ -398,6 +422,7 @@ impl BarRenderer {
         let left = left.max(0) as f32;
         let right = right.min(layout_i32(pixmap.width())) as f32;
         let width = right - left;
+
         if width <= 0.0 {
             return;
         }
@@ -407,40 +432,49 @@ impl BarRenderer {
         pixmap.fill_rect(rect, &paint, Transform::identity(), None);
     }
 
+    // cosmic-text and tiny-skia use f32 layout; integer raster positions require rounding.
+
+    #[allow(clippy::cast_precision_loss)]
     fn draw_button_indicator(
-        &self,
         pixmap: &mut Pixmap,
         left: i32,
         right: i32,
         height: u32,
         indicator: Option<([u8; 4], u32, bool)>,
     ) {
-        let Some(([r, g, b, a], indicator_height, at_top)) = indicator else {
+        let Some((rgba, indicator_height, at_top)) = indicator else {
             return;
         };
         let indicator_height = indicator_height.min(height);
+
         if right <= left || indicator_height == 0 || height == 0 {
             return;
         }
 
         let mut paint = Paint::default();
-        paint.set_color_rgba8(r, g, b, a);
+        paint.set_color_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]);
         let left = left.max(0) as f32;
         let right = right.min(layout_i32(pixmap.width())) as f32;
         let width = right - left;
+
         if width <= 0.0 {
             return;
         }
+
         let y = if at_top {
             0.0
         } else {
             (height - indicator_height) as f32
         };
+
         let rect = Rect::from_xywh(left, y, width, indicator_height as f32)
             .expect("valid button indicator rectangle");
         pixmap.fill_rect(rect, &paint, Transform::identity(), None);
     }
 
+    // cosmic-text and tiny-skia use f32 layout; integer raster positions require rounding.
+
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
     fn measure_text(&mut self, text: &str, metrics: &RenderMetrics, bold: bool) -> i32 {
         let line_height = metrics.font_size * 1.2857;
         let mut buffer = Buffer::new(
@@ -450,9 +484,11 @@ impl BarRenderer {
         buffer.set_size(Some(metrics.width as f32), Some(metrics.height as f32));
         buffer.set_wrap(Wrap::None);
         let mut attrs = Attrs::new().color(metrics.text_color);
+
         if !self.config.font_family.is_empty() {
             attrs = attrs.family(Family::Name(&self.config.font_family));
         }
+
         if bold {
             attrs = attrs.weight(Weight::BOLD);
         }
@@ -474,10 +510,13 @@ impl BarRenderer {
         bold: bool,
     ) -> (String, i32) {
         let full_width = self.measure_text(text, metrics, bold);
+
         if full_width <= max_width {
             return (text.to_string(), full_width);
         }
+
         let ellipsis_width = self.measure_text("…", metrics, bold);
+
         if ellipsis_width > max_width {
             return (String::new(), 0);
         }
@@ -491,10 +530,12 @@ impl BarRenderer {
         let mut low = 0;
         let mut high = boundaries.len() - 1;
         let mut width = ellipsis_width;
+
         while low < high {
             let middle = (low + high).div_ceil(2);
             let candidate = format!("{}…", &text[..boundaries[middle]]);
             let candidate_width = self.measure_text(&candidate, metrics, bold);
+
             if candidate_width <= max_width {
                 low = middle;
 
@@ -503,9 +544,13 @@ impl BarRenderer {
                 high = middle - 1;
             }
         }
+
         (format!("{}…", &text[..boundaries[low]]), width)
     }
 
+    // cosmic-text and tiny-skia use f32 layout; integer raster positions require rounding.
+
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
     fn draw_text(
         &mut self,
         pixmap: &mut Pixmap,
@@ -524,12 +569,15 @@ impl BarRenderer {
 
         buffer.set_wrap(Wrap::None);
         let mut attrs = Attrs::new().color(text_color);
+
         if !self.config.font_family.is_empty() {
             attrs = attrs.family(Family::Name(&self.config.font_family));
         }
+
         if bold {
             attrs = attrs.weight(Weight::BOLD);
         }
+
         buffer.set_text(text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
         let text_width = buffer
@@ -542,6 +590,7 @@ impl BarRenderer {
         let text_y = ((metrics.height as f32 - line_height) / 2.0).max(0.0) as i32;
         let pixmap_width = layout_i32(pixmap.width());
         let pixmap_height = layout_i32(pixmap.height());
+
         buffer.draw(
             &mut self.font_system,
             &mut self.swash_cache,
@@ -549,16 +598,23 @@ impl BarRenderer {
             |glyph_x, glyph_y, _w, _h, color| {
                 let px = x.saturating_add(glyph_x);
                 let py = text_y.saturating_add(glyph_y);
+
                 if px < 0 || py < 0 || px >= pixmap_width || py >= pixmap_height {
                     return;
                 }
-                let pixel = (py as u32 * pixmap.width() + px as u32) as usize * 4;
+
+                let pixel = (py.cast_unsigned() * pixmap.width() + px.cast_unsigned()) as usize * 4;
                 let [r, g, b, coverage] = color.as_rgba();
 
                 let data = pixmap.data_mut();
-                let inverse = 255 - coverage as u16;
+                let inverse = 255 - u16::from(coverage);
                 let blend = |source: u8, destination: u8| {
-                    ((source as u16 * coverage as u16 + destination as u16 * inverse) / 255) as u8
+                    u8::try_from(
+                        (u16::from(source) * u16::from(coverage)
+                            + u16::from(destination) * inverse)
+                            / 255,
+                    )
+                    .expect("blended channel is at most 255")
                 };
                 let destination = [data[pixel], data[pixel + 1], data[pixel + 2]];
                 data[pixel..pixel + 4].copy_from_slice(&[
@@ -569,10 +625,11 @@ impl BarRenderer {
                 ]);
             },
         );
+
         text_width
     }
 
-    fn draw_icon(&self, pixmap: &mut Pixmap, icon: &RenderIcon, x: i32) {
+    fn draw_icon(pixmap: &mut Pixmap, icon: &RenderIcon, x: i32) {
         if icon.width == 0
             || icon.height == 0
             || icon.pixels.len()
@@ -582,19 +639,25 @@ impl BarRenderer {
         {
             return;
         }
+
         let pixmap_width = layout_i32(pixmap.width());
         let pixmap_height = layout_i32(pixmap.height());
         let y = (pixmap_height.saturating_sub(layout_i32(icon.height)) / 2).max(0);
+
         for iy in 0..icon.height {
             for ix in 0..icon.width {
                 let px = x.saturating_add(layout_i32(ix));
 
                 let py = y.saturating_add(layout_i32(iy));
+
                 if px < 0 || py < 0 || px >= pixmap_width || py >= pixmap_height {
                     continue;
                 }
+
                 let source = (iy as usize * icon.width as usize + ix as usize) * 4;
-                let destination = (py as usize * pixmap.width() as usize + px as usize) * 4;
+                let destination = (py.cast_unsigned() as usize * pixmap.width() as usize
+                    + px.cast_unsigned() as usize)
+                    * 4;
                 let [sr, sg, sb, sa] = [
                     icon.pixels[source],
                     icon.pixels[source + 1],
@@ -602,20 +665,21 @@ impl BarRenderer {
                     icon.pixels[source + 3],
                 ];
                 let da = pixmap.data()[destination + 3];
-                let alpha = sa as u16 + ((da as u16 * (255 - sa as u16)) / 255);
+                let alpha = u16::from(sa) + ((u16::from(da) * (255 - u16::from(sa))) / 255);
 
                 if alpha == 0 {
                     continue;
                 }
-                let inverse = 255 - sa as u16;
+
+                let inverse = 255 - u16::from(sa);
                 let data = pixmap.data_mut();
                 let dr = data[destination];
                 let dg = data[destination + 1];
                 let db = data[destination + 2];
                 data[destination..destination + 4].copy_from_slice(&[
-                    (sr as u16 + dr as u16 * inverse / 255).min(255) as u8,
-                    (sg as u16 + dg as u16 * inverse / 255).min(255) as u8,
-                    (sb as u16 + db as u16 * inverse / 255).min(255) as u8,
+                    (u16::from(sr) + u16::from(dr) * inverse / 255).min(255) as u8,
+                    (u16::from(sg) + u16::from(dg) * inverse / 255).min(255) as u8,
+                    (u16::from(sb) + u16::from(db) * inverse / 255).min(255) as u8,
                     alpha.min(255) as u8,
                 ]);
             }
@@ -698,7 +762,7 @@ impl Hitbox {
     }
 
     fn contains(&self, x: f64) -> bool {
-        x >= self.left as f64 && x < self.right as f64
+        x >= f64::from(self.left) && x < f64::from(self.right)
     }
 
     fn dispatch_click(
@@ -714,6 +778,7 @@ impl Hitbox {
             surface_width: self.surface_width,
             output,
         };
+
         match self.alignment {
             Alignment::Left => left[self.index].on_click_at(button, self.item, context),
             Alignment::Center => center[self.index].on_click_at(button, self.item, context),
@@ -856,7 +921,9 @@ mod tests {
         let mut center: Vec<Box<dyn RenderWidget>> = vec![Box::new(FixedButtons)];
         let mut right: Vec<Box<dyn RenderWidget>> = vec![Box::new(FixedButtons)];
 
-        renderer.render(100, 30, None, &mut left, &mut center, &mut right);
+        renderer
+            .render(100, 30, None, &mut left, &mut center, &mut right)
+            .unwrap();
         let hitboxes = &renderer.hitboxes[&None];
         let bounds: Vec<_> = hitboxes
             .iter()
@@ -885,7 +952,9 @@ mod tests {
         let mut center = vec![widget()];
         let mut right = vec![widget()];
 
-        let pixels = renderer.render(100, 30, None, &mut left, &mut center, &mut right);
+        let pixels = renderer
+            .render(100, 30, None, &mut left, &mut center, &mut right)
+            .unwrap();
         assert_eq!(pixels.len(), 100 * 30 * 4);
     }
 
@@ -914,7 +983,9 @@ mod tests {
         assert_eq!(items[1].padding, i32::MAX);
         assert_eq!(items[1].width(), i32::MAX);
 
-        let pixels = renderer.render(100, 30, None, &mut widgets, &mut [], &mut []);
+        let pixels = renderer
+            .render(100, 30, None, &mut widgets, &mut [], &mut [])
+            .unwrap();
         assert_eq!(pixels.len(), 100 * 30 * 4);
     }
 
@@ -944,7 +1015,9 @@ mod tests {
         );
 
         let mut left: Vec<Box<dyn RenderWidget>> = vec![Box::new(LimitedWidget)];
-        renderer.render(800, 30, None, &mut left, &mut [], &mut []);
+        renderer
+            .render(800, 30, None, &mut left, &mut [], &mut [])
+            .unwrap();
         let hitbox = &renderer.hitboxes[&None][0];
         assert!(hitbox.right - hitbox.left <= 80);
     }
@@ -962,9 +1035,13 @@ mod tests {
         let mut renderer = BarRenderer::new(&config).unwrap();
 
         left[0].set_monitor_name(Some("A"));
-        renderer.render(300, 30, Some("A"), &mut left, &mut center, &mut right);
+        renderer
+            .render(300, 30, Some("A"), &mut left, &mut center, &mut right)
+            .unwrap();
         left[0].set_monitor_name(Some("B"));
-        renderer.render(300, 30, Some("B"), &mut left, &mut center, &mut right);
+        renderer
+            .render(300, 30, Some("B"), &mut left, &mut center, &mut right)
+            .unwrap();
 
         renderer.handle_click(
             10.0,

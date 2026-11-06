@@ -25,6 +25,7 @@ fn memory_state(
     if page_size == 0 {
         return Err("FreeBSD VM page size is zero".to_string());
     }
+
     // Inactive pages can be reclaimed; laundry pages still need writeback.
     let available_pages = u64::from(free_pages) + u64::from(inactive_pages);
     let total_bytes = u64::from(total_pages) * u64::from(page_size);

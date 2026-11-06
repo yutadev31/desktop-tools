@@ -37,3 +37,6 @@ default = ["wayland", "windows", "x11"]
 wayland = ["dep:wayland-client", "dep:wayland-protocols-wlr"]
 windows = ["dep:windows-sys"]
 x11 = ["dep:x11rb"]
+
+[lints]
+workspace = true

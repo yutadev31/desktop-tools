@@ -82,3 +82,12 @@ cargo build -p cpst --locked
 
 This project is licensed under the MIT License. See
 [`LICENSE.txt`](../../LICENSE.txt) for the full license text.
+
+## Library errors
+
+`copy`, `paste`, and `run_daemon` return `Result<(), cpst::Error>` instead of
+`Result<(), String>`. Match error variants when handling failures and use
+`std::error::Error::source` to inspect local operation failures. Use `to_string()`
+when a string is needed. Errors reported by the separate Linux daemon retain its
+protocol message; an in-process source is unavailable across that process boundary.
+The CLI and daemon protocol are unchanged.

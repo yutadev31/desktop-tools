@@ -8,3 +8,7 @@ license.workspace = true
 arboard.workspace = true
 clap.workspace = true
 image.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

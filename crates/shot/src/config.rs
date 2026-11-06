@@ -25,14 +25,20 @@ impl Default for OutputConfig {
 }
 
 impl Config {
+    /// Loads the user configuration, using defaults when the file is absent.
+    ///
+    /// # Errors
+    /// Returns an error if the configuration cannot be read or parsed.
     pub fn load() -> crate::Result<Self> {
         let Some(config_dir) = dirs::config_dir() else {
             return Ok(Self::default());
         };
         let path = config_dir.join("shot").join("config.toml");
+
         match fs::read_to_string(path) {
             Ok(contents) => {
                 let mut config: Self = toml::from_str(&contents)?;
+
                 if config.output.path_format.as_deref() == Some("") {
                     eprintln!(
                         "Warning: output.path_format is empty; using the default output path"

@@ -11,9 +11,11 @@ pub(crate) fn select(names: &[String]) -> io::Result<Option<usize>> {
     if names.is_empty() {
         return Ok(None);
     }
+
     let mut stdout = io::stdout();
     println!("Select a monitor (↑/↓ or h/j/k/l, Enter to capture, Esc to cancel):");
     terminal::enable_raw_mode()?;
+
     let result = (|| {
         execute!(stdout, cursor::Hide)?;
         execute!(stdout, cursor::SavePosition)?;
@@ -40,10 +42,10 @@ pub(crate) fn select(names: &[String]) -> io::Result<Option<usize>> {
                 && key.kind.is_press()
             {
                 match key.code {
-                    KeyCode::Up | KeyCode::Left | KeyCode::Char('k') | KeyCode::Char('h') => {
+                    KeyCode::Up | KeyCode::Left | KeyCode::Char('k' | 'h') => {
                         selected = previous(selected, names.len());
                     }
-                    KeyCode::Down | KeyCode::Right | KeyCode::Char('j') | KeyCode::Char('l') => {
+                    KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => {
                         selected = next(selected, names.len());
                     }
                     KeyCode::Enter => break Ok(Some(selected)),
@@ -51,12 +53,20 @@ pub(crate) fn select(names: &[String]) -> io::Result<Option<usize>> {
                     _ => continue,
                 }
 
-                execute!(stdout, cursor::MoveUp(names.len() as u16))?;
+                execute!(
+                    stdout,
+                    cursor::MoveUp(
+                        u16::try_from(names.len())
+                            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+                    )
+                )?;
             }
         }
     })();
+
     let cleanup =
         terminal::disable_raw_mode().and(execute!(stdout, cursor::Show, cursor::MoveToColumn(0)));
+
     match cleanup {
         Ok(()) => result,
         Err(error) => Err(error),

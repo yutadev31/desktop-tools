@@ -7,6 +7,7 @@ struct Pst;
 
 fn main() {
     Pst::parse();
+
     if let Err(error) = paste() {
         eprintln!("pst: {error}");
         std::process::exit(1);

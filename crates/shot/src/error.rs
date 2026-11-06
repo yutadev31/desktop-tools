@@ -73,7 +73,7 @@ pub enum Error {
     InvalidPathFormat(String),
 
     #[error("failed to access clipboard")]
-    ClipboardFailed,
+    ClipboardFailed(#[source] arboard::Error),
 
     #[error("no output destination is configured")]
     NoOutputDestination,
@@ -82,7 +82,7 @@ pub enum Error {
     DisplayUnavailable(String),
 
     #[error("failed to connect to X11: {0}")]
-    X11Connect(String),
+    X11Connect(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     #[error("X11 screen is unavailable: {0}")]
     X11Screen(String),
@@ -91,7 +91,7 @@ pub enum Error {
     X11Visual(String),
 
     #[error("X11 image operation failed: {0}")]
-    X11Image(String),
+    X11Image(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     #[error("Windows screen capture failed: {0}")]
     WindowsCapture(String),

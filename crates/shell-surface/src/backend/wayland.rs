@@ -8,8 +8,7 @@ use std::{
 use memmap2::MmapMut;
 use wayland_client::{
     Connection, Dispatch, QueueHandle, WEnum, delegate_noop,
-    globals::GlobalListContents,
-    globals::registry_queue_init,
+    globals::{GlobalListContents, registry_queue_init},
     protocol::{
         wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry,
         wl_seat, wl_shm, wl_shm_pool, wl_surface,
@@ -41,162 +40,200 @@ struct RepeatingKey {
 pub struct WaylandBackend;
 
 impl Backend for WaylandBackend {
-    fn run(&mut self, shell: &mut dyn Shell) -> Result<(), Box<dyn Error>> {
-        let configs = shell.surface_configs().to_vec();
-        if configs.is_empty() {
-            return Err("shell has no surfaces".into());
-        }
+    fn run(&mut self, shell: &mut dyn Shell) -> Result<(), crate::Error> {
+        run(shell).map_err(|source| crate::Error::Backend {
+            backend: "Wayland",
+            source,
+        })
+    }
+}
 
-        let connection = Connection::connect_to_env()?;
-        let (globals, mut event_queue) = registry_queue_init::<State>(&connection)?;
-        let qh = event_queue.handle();
-        let compositor: wl_compositor::WlCompositor = globals.bind(&qh, 1..=4, ())?;
-        let shm: wl_shm::WlShm = globals.bind(&qh, 1..=1, ())?;
-        let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 = globals.bind(&qh, 1..=4, ())?;
-        let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=9, ())?;
+fn run(shell: &mut dyn Shell) -> Result<(), Box<dyn Error>> {
+    let configs = shell.surface_configs().to_vec();
 
-        let needs_output_binding = configs.iter().any(|config| {
-            matches!(
-                &config.output,
-                OutputSelection::All | OutputSelection::Named(_)
-            )
-        });
-        let registry = globals.registry().clone();
+    if configs.is_empty() {
+        return Err("shell has no surfaces".into());
+    }
 
-        let outputs = if needs_output_binding {
-            globals.contents().with_list(|list| {
-                list.iter()
-                    .filter(|global| global.interface == "wl_output")
-                    .map(|global| {
-                        registry.bind::<wl_output::WlOutput, _, _>(
-                            global.name,
-                            global.version.min(4),
-                            &qh,
-                            (),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            })
-        } else {
-            Vec::new()
-        };
-        if needs_output_binding && outputs.is_empty() {
-            return Err("Wayland compositor advertised no outputs".into());
-        }
+    let connection = Connection::connect_to_env()?;
+    let (globals, mut event_queue) = registry_queue_init::<State>(&connection)?;
+    let qh = event_queue.handle();
+    let compositor: wl_compositor::WlCompositor = globals.bind(&qh, 1..=4, ())?;
+    let shm: wl_shm::WlShm = globals.bind(&qh, 1..=1, ())?;
+    let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 = globals.bind(&qh, 1..=4, ())?;
+    let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=9, ())?;
 
-        let pointer = seat.get_pointer(&qh, ());
-        let keyboard = configs
-            .iter()
-            .any(|config| config.keyboard_interactivity != KeyboardInteractivity::None)
-            .then(|| seat.get_keyboard(&qh, ()));
-        let mut state = State::new(shm, outputs.clone(), Vec::new(), seat, pointer, keyboard);
-        // wl_output names are delivered asynchronously, so resolve named
-        // outputs before constructing their layer surfaces.
-        event_queue.roundtrip(&mut state)?;
+    let needs_output_binding = configs.iter().any(|config| {
+        matches!(
+            &config.output,
+            OutputSelection::All | OutputSelection::Named(_)
+        )
+    });
+    let registry = globals.registry().clone();
 
-        for (index, config) in configs.iter().enumerate() {
-            let surface_id = SurfaceId(index);
-            match &config.output {
-                OutputSelection::All => {
-                    for output in &outputs {
-                        let mut surface = create_surface(
-                            &compositor,
-                            &layer_shell,
-                            Some(output),
-                            surface_id,
-                            config,
-                            &qh,
-                        );
-
-                        surface.monitor_name = state
-                            .output_names
-                            .iter()
-                            .find(|(known, _)| known == output)
-                            .map(|(_, name)| name.clone());
-                        state.surfaces.push(surface);
-                    }
-                }
-                OutputSelection::Compositor => {
-                    state.surfaces.push(create_surface(
-                        &compositor,
-                        &layer_shell,
-                        None,
-                        surface_id,
-                        config,
+    let outputs = if needs_output_binding {
+        globals.contents().with_list(|list| {
+            list.iter()
+                .filter(|global| global.interface == "wl_output")
+                .map(|global| {
+                    registry.bind::<wl_output::WlOutput, _, _>(
+                        global.name,
+                        global.version.min(4),
                         &qh,
-                    ));
-                }
+                        (),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+    } else {
+        Vec::new()
+    };
 
-                OutputSelection::Named(name) => {
-                    let output = state
-                        .output_names
-                        .iter()
-                        .find(|(_, known_name)| known_name == name)
-                        .map(|(output, _)| output.clone())
-                        .ok_or_else(|| format!("Wayland output `{name}` is unavailable"))?;
+    if needs_output_binding && outputs.is_empty() {
+        return Err("Wayland compositor advertised no outputs".into());
+    }
+
+    let pointer = seat.get_pointer(&qh, ());
+    let keyboard = configs
+        .iter()
+        .any(|config| config.keyboard_interactivity != KeyboardInteractivity::None)
+        .then(|| seat.get_keyboard(&qh, ()));
+    let mut state = State::new(shm, outputs.clone(), Vec::new(), seat, pointer, keyboard);
+    // wl_output names are delivered asynchronously, so resolve named
+    // outputs before constructing their layer surfaces.
+    event_queue.roundtrip(&mut state)?;
+
+    add_surfaces(
+        &configs,
+        &outputs,
+        &mut state,
+        &compositor,
+        &layer_shell,
+        &qh,
+    )?;
+    event_queue.roundtrip(&mut state)?;
+    state.draw_pending(&qh, shell)?;
+
+    while !state.closed && !shell.should_close() {
+        event_queue.dispatch_pending(&mut state)?;
+        connection.flush()?;
+
+        if let Some(guard) = event_queue.prepare_read() {
+            let mut fd = libc::pollfd {
+                fd: connection.backend().poll_fd().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // A bounded wait lets external controllers close a visible surface.
+            let timeout = state
+                .repeating_key
+                .as_ref()
+                .map(|repeat| repeat.next.saturating_duration_since(Instant::now()))
+                .map_or(50, |remaining| remaining.as_millis().clamp(1, 50) as i32);
+
+            // SAFETY: fd points to one initialized pollfd for a live connection.
+            let ready = unsafe { libc::poll(&raw mut fd, 1, timeout) };
+
+            if ready > 0 {
+                guard.read()?;
+                event_queue.dispatch_pending(&mut state)?;
+            } else if ready < 0
+                && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+
+        state.repeat_key();
+
+        if shell.take_redraw_request() {
+            state.mark_all_for_redraw();
+        }
+
+        let pointer_events = std::mem::take(&mut state.pending_events);
+
+        if !pointer_events.is_empty() {
+            state.mark_all_for_redraw();
+        }
+
+        for pending in pointer_events {
+            shell.handle_event(pending.surface, pending.event);
+        }
+
+        if shell.should_close() {
+            break;
+        }
+
+        state.draw_pending(&qh, shell)?;
+    }
+
+    Ok(())
+}
+
+fn add_surfaces(
+    configs: &[SurfaceConfig],
+    outputs: &[wl_output::WlOutput],
+    state: &mut State,
+    compositor: &wl_compositor::WlCompositor,
+    layer_shell: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
+    qh: &QueueHandle<State>,
+) -> Result<(), Box<dyn Error>> {
+    for (index, config) in configs.iter().enumerate() {
+        let surface_id = SurfaceId(index);
+
+        match &config.output {
+            OutputSelection::All => {
+                for output in outputs {
                     let mut surface = create_surface(
-                        &compositor,
-                        &layer_shell,
-                        Some(&output),
+                        compositor,
+                        layer_shell,
+                        Some(output),
                         surface_id,
                         config,
-                        &qh,
+                        qh,
                     );
 
-                    surface.monitor_name = Some(name.clone());
+                    surface.monitor_name = state
+                        .output_names
+                        .iter()
+                        .find(|(known, _)| known == output)
+                        .map(|(_, name)| name.clone());
                     state.surfaces.push(surface);
                 }
             }
+            OutputSelection::Compositor => {
+                state.surfaces.push(create_surface(
+                    compositor,
+                    layer_shell,
+                    None,
+                    surface_id,
+                    config,
+                    qh,
+                ));
+            }
+            OutputSelection::Named(name) => {
+                let output = state
+                    .output_names
+                    .iter()
+                    .find(|(_, known_name)| known_name == name)
+                    .map(|(output, _)| output.clone())
+                    .ok_or_else(|| format!("Wayland output `{name}` is unavailable"))?;
+                let mut surface = create_surface(
+                    compositor,
+                    layer_shell,
+                    Some(&output),
+                    surface_id,
+                    config,
+                    qh,
+                );
+
+                surface.monitor_name = Some(name.clone());
+                state.surfaces.push(surface);
+            }
         }
-        event_queue.roundtrip(&mut state)?;
-        state.draw_pending(&qh, shell)?;
-
-        while !state.closed && !shell.should_close() {
-            event_queue.dispatch_pending(&mut state)?;
-            connection.flush()?;
-            if let Some(guard) = event_queue.prepare_read() {
-                let mut fd = libc::pollfd {
-                    fd: connection.backend().poll_fd().as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                // A bounded wait lets external controllers close a visible surface.
-                let timeout = state
-                    .repeating_key
-                    .as_ref()
-                    .map(|repeat| repeat.next.saturating_duration_since(Instant::now()))
-                    .map(|remaining| remaining.as_millis().clamp(1, 50) as i32)
-                    .unwrap_or(50);
-
-                let ready = unsafe { libc::poll(&mut fd, 1, timeout) };
-                if ready > 0 {
-                    guard.read()?;
-                    event_queue.dispatch_pending(&mut state)?;
-                } else if ready < 0
-                    && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
-                {
-                    return Err(std::io::Error::last_os_error().into());
-                }
-            }
-            state.repeat_key();
-            if shell.take_redraw_request() {
-                state.mark_all_for_redraw();
-            }
-            let pointer_events = std::mem::take(&mut state.pending_events);
-
-            if !pointer_events.is_empty() {
-                state.mark_all_for_redraw();
-            }
-            for pending in pointer_events {
-                shell.handle_event(pending.surface, pending.event);
-            }
-            if shell.should_close() {
-                break;
-            }
-            state.draw_pending(&qh, shell)?;
-        }
-        Ok(())
     }
+
+    Ok(())
 }
 
 fn create_surface(
@@ -218,12 +255,15 @@ fn create_surface(
     );
 
     let anchors = anchors(config.anchors);
+
     if !config.anchors.is_empty() {
         layer_surface.set_anchor(anchors);
     }
+
     layer_surface.set_size(config.size.width, config.size.height);
     layer_surface.set_exclusive_zone(config.exclusive_zone);
     layer_surface.set_keyboard_interactivity(keyboard_interactivity(config.keyboard_interactivity));
+
     if config.position != super::Position::default() {
         let left =
             if config.anchors.contains(Anchors::LEFT) && !config.anchors.contains(Anchors::RIGHT) {
@@ -238,16 +278,12 @@ fn create_surface(
             } else {
                 0
             };
+
         layer_surface.set_margin(config.position.y, right, 0, left);
     }
+
     surface.commit();
-    SurfaceState::new(
-        surface_id,
-        output.cloned(),
-        surface,
-        layer_surface,
-        config.clone(),
-    )
+    SurfaceState::new(surface_id, output.cloned(), surface, layer_surface, config)
 }
 
 fn layer(layer: Layer) -> zwlr_layer_shell_v1::Layer {
@@ -261,18 +297,23 @@ fn layer(layer: Layer) -> zwlr_layer_shell_v1::Layer {
 
 fn anchors(value: Anchors) -> zwlr_layer_surface_v1::Anchor {
     let mut result = zwlr_layer_surface_v1::Anchor::empty();
+
     if value.contains(Anchors::TOP) {
         result |= zwlr_layer_surface_v1::Anchor::Top;
     }
+
     if value.contains(Anchors::BOTTOM) {
         result |= zwlr_layer_surface_v1::Anchor::Bottom;
     }
+
     if value.contains(Anchors::LEFT) {
         result |= zwlr_layer_surface_v1::Anchor::Left;
     }
+
     if value.contains(Anchors::RIGHT) {
         result |= zwlr_layer_surface_v1::Anchor::Right;
     }
+
     result
 }
 
@@ -298,7 +339,7 @@ struct State {
     pointer_position: PositionF64,
     keyboard_surface: Option<usize>,
     pending_events: Vec<PendingEvent>,
-    key_state: Option<xkb::State>,
+    xkb: Option<xkb::State>,
     repeat_delay: Duration,
     repeat_interval: Option<Duration>,
     repeating_key: Option<RepeatingKey>,
@@ -325,7 +366,7 @@ impl SurfaceState {
         output: Option<wl_output::WlOutput>,
         surface: wl_surface::WlSurface,
         layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
-        config: SurfaceConfig,
+        config: &SurfaceConfig,
     ) -> Self {
         let size = Size::new(
             config.size.width.max(WIDTH_FALLBACK),
@@ -370,7 +411,7 @@ impl State {
             pointer_position: PositionF64::default(),
             keyboard_surface: None,
             pending_events: Vec::new(),
-            key_state: None,
+            xkb: None,
             repeat_delay: DEFAULT_REPEAT_DELAY,
             repeat_interval: Some(DEFAULT_REPEAT_INTERVAL),
             repeating_key: None,
@@ -385,12 +426,13 @@ impl State {
     }
 
     fn queue_key_input(&mut self, surface: usize, keycode: u32) {
-        let Some(key_state) = &self.key_state else {
+        let Some(xkb) = &self.xkb else {
             return;
         };
         let code = xkb::Keycode::new(keycode + 8);
-        let symbol = key_state.key_get_one_sym(code).raw();
-        let text = key_state.key_get_utf8(code);
+        let symbol = xkb.key_get_one_sym(code).raw();
+        let text = xkb.key_get_utf8(code);
+
         self.pending_events.push(PendingEvent {
             surface: self.surfaces[surface].logical_surface,
             event: InputEvent::KeyInput {
@@ -416,9 +458,11 @@ impl State {
         let Some(repeat) = &mut self.repeating_key else {
             return;
         };
+
         if Instant::now() < repeat.next {
             return;
         }
+
         let keycode = repeat.keycode;
         let surface = repeat.surface;
         repeat.next = Instant::now() + interval;
@@ -435,6 +479,7 @@ impl State {
                 self.draw(index, qh, shell)?;
             }
         }
+
         Ok(())
     }
 
@@ -449,6 +494,7 @@ impl State {
         let monitor_name = self.surfaces[index].monitor_name.clone();
         let pixels = shell.render(logical_surface, size, monitor_name.as_deref())?;
         let expected = size.width as usize * size.height as usize * 4;
+
         if pixels.len() != expected {
             return Err(format!(
                 "surface {:?} rendered {} bytes, expected {expected}",
@@ -457,6 +503,7 @@ impl State {
             )
             .into());
         }
+
         let stride = size.width * 4;
 
         if self.surfaces[index].last_pixels.as_ref() == Some(&pixels) {
@@ -471,17 +518,19 @@ impl State {
 
         let buffer_size = stride * size.height;
         let file = tempfile::tempfile()?;
-        file.set_len(buffer_size as u64)?;
+        file.set_len(u64::from(buffer_size))?;
+        // SAFETY: This private file has the requested length and is never truncated.
+        // The compositor only reads the mapping after the buffer is committed.
         let mut mapping = unsafe { MmapMut::map_mut(&file)? };
         mapping.copy_from_slice(&pixels);
         let pool = self
             .shm
-            .create_pool(file.as_fd(), buffer_size as i32, qh, ());
+            .create_pool(file.as_fd(), i32::try_from(buffer_size)?, qh, ());
         let buffer = pool.create_buffer(
             0,
-            size.width as i32,
-            size.height as i32,
-            stride as i32,
+            i32::try_from(size.width)?,
+            i32::try_from(size.height)?,
+            i32::try_from(stride)?,
             wl_shm::Format::Argb8888,
             qh,
             (),
@@ -490,9 +539,12 @@ impl State {
         pool.destroy();
         let surface = &mut self.surfaces[index];
         surface.surface.attach(Some(&buffer), 0, 0);
-        surface
-            .surface
-            .damage_buffer(0, 0, size.width as i32, size.height as i32);
+        surface.surface.damage_buffer(
+            0,
+            0,
+            i32::try_from(size.width)?,
+            i32::try_from(size.height)?,
+        );
         surface.frame_callback = Some(surface.surface.frame(qh, ()));
         surface.surface.commit();
         surface.buffer = Some(ShmBuffer {
@@ -538,12 +590,15 @@ fn handle_layer_configure(
     };
 
     surface.layer_surface.ack_configure(serial);
+
     if width > 0 {
         surface.size.width = width;
     }
+
     if height > 0 {
         surface.size.height = height;
     }
+
     surface.needs_redraw = true;
 
     state.pending_events.push(PendingEvent {
@@ -567,7 +622,6 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for State {
                 width,
                 height,
             } => handle_layer_configure(state, proxy, serial, width, height),
-
             zwlr_layer_surface_v1::Event::Closed => {
                 if let Some(surface) = state
                     .surfaces
@@ -579,6 +633,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for State {
                         event: InputEvent::CloseRequested,
                     });
                 }
+
                 state.closed = true;
             }
             _ => {}
@@ -645,6 +700,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
                 state.pointer_surface = state.surface_index(&surface);
 
                 state.pointer_position = PositionF64::new(surface_x, surface_y);
+
                 if let Some(index) = state.pointer_surface {
                     state.pending_events.push(PendingEvent {
                         surface: state.surfaces[index].logical_surface,
@@ -671,6 +727,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
                 ..
             } => {
                 state.pointer_position = PositionF64::new(surface_x, surface_y);
+
                 if let Some(index) = state.pointer_surface {
                     state.pending_events.push(PendingEvent {
                         surface: state.surfaces[index].logical_surface,
@@ -681,7 +738,6 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
                     });
                 }
             }
-
             wl_pointer::Event::Button {
                 button,
                 state: button_state,
@@ -736,15 +792,15 @@ fn handle_keyboard_key(state: &mut State, key: u32, pressed: bool) {
             pressed,
         },
     });
+
     if pressed {
         state.queue_key_input(index, key);
 
         let key_repeats = state.repeat_interval.is_some()
-            && state.key_state.as_ref().is_some_and(|key_state| {
-                key_state
-                    .get_keymap()
-                    .key_repeats(xkb::Keycode::new(key + 8))
-            });
+            && state
+                .xkb
+                .as_ref()
+                .is_some_and(|xkb| xkb.get_keymap().key_repeats(xkb::Keycode::new(key + 8)));
 
         if key_repeats {
             state.repeating_key = Some(RepeatingKey {
@@ -774,9 +830,12 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
         match event {
             wl_keyboard::Event::Keymap { format, fd, size } => {
                 state.repeating_key = None;
+
                 if format.into_result().ok() == Some(wl_keyboard::KeymapFormat::XkbV1) {
                     let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
 
+                    // SAFETY: Wayland supplies an owned keymap fd and its mapping length;
+                    // xkbcommon maps it read-only and does not retain the descriptor.
                     match unsafe {
                         xkb::Keymap::new_from_fd(
                             &context,
@@ -786,12 +845,11 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
                             xkb::KEYMAP_COMPILE_NO_FLAGS,
                         )
                     } {
-                        Ok(Some(keymap)) => state.key_state = Some(xkb::State::new(&keymap)),
-                        _ => state.key_state = None,
+                        Ok(Some(keymap)) => state.xkb = Some(xkb::State::new(&keymap)),
+                        _ => state.xkb = None,
                     }
                 }
             }
-
             wl_keyboard::Event::Modifiers {
                 mods_depressed,
                 mods_latched,
@@ -799,39 +857,38 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
                 group,
                 ..
             } => {
-                if let Some(key_state) = &mut state.key_state {
-                    key_state.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
+                if let Some(xkb) = &mut state.xkb {
+                    xkb.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
                 }
             }
             wl_keyboard::Event::Enter { surface, .. } => {
                 state.repeating_key = None;
                 state.keyboard_surface = state.surface_index(&surface);
             }
-
             wl_keyboard::Event::Leave { surface, .. } => {
                 state.repeating_key = None;
+
                 if let Some(index) = state.surface_index(&surface) {
                     state.pending_events.push(PendingEvent {
                         surface: state.surfaces[index].logical_surface,
                         event: InputEvent::FocusLost,
                     });
                 }
+
                 state.keyboard_surface = None;
             }
             wl_keyboard::Event::RepeatInfo { rate, delay } => {
                 state.repeat_interval = (rate > 0).then(|| {
                     Duration::from_secs_f64(1.0 / f64::from(rate)).max(Duration::from_millis(1))
                 });
-                state.repeat_delay = Duration::from_millis(delay.max(0) as u64);
+                state.repeat_delay = Duration::from_millis(u64::from(delay.max(0).cast_unsigned()));
 
                 state.repeating_key = None;
             }
             wl_keyboard::Event::Key {
-                key,
-                state: key_state,
-                ..
+                key, state: xkb, ..
             } => {
-                let pressed = key_state.into_result().ok() == Some(wl_keyboard::KeyState::Pressed);
+                let pressed = xkb.into_result().ok() == Some(wl_keyboard::KeyState::Pressed);
                 handle_keyboard_key(state, key, pressed);
             }
             _ => {}
@@ -875,7 +932,7 @@ impl Dispatch<wl_output::WlOutput, ()> for State {
                 .iter_mut()
                 .find(|(known, _)| known == proxy)
             {
-                *known_name = name.clone();
+                known_name.clone_from(&name);
             } else {
                 state.output_names.push((proxy.clone(), name.clone()));
             }

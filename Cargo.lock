@@ -472,6 +472,7 @@ dependencies = [
  "arboard",
  "clap",
  "image",
+ "thiserror",
 ]
 
 [[package]]
@@ -1809,6 +1810,7 @@ dependencies = [
  "libc",
  "memmap2",
  "tempfile",
+ "thiserror",
  "wayland-client",
  "wayland-protocols-wlr",
  "x11rb 0.14.0",

@@ -1,11 +1,10 @@
 use std::time::{Duration, Instant};
 
+use super::{Widget, WidgetContent};
 use crate::{
     config::ProcessConfig,
     provider::process::{self, ProcessProvider},
 };
-
-use super::{Widget, WidgetContent};
 
 pub struct Process {
     provider: Box<dyn ProcessProvider>,
@@ -38,6 +37,7 @@ impl Widget for Process {
         {
             return false;
         }
+
         let count = match self.provider.read() {
             Ok(count) => Some(count),
             Err(error) => {
@@ -47,9 +47,11 @@ impl Widget for Process {
         };
 
         self.last_refresh = Some(Instant::now());
+
         if self.count == count {
             return false;
         }
+
         self.count = count;
         true
     }

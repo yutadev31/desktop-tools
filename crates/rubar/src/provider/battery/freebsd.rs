@@ -9,9 +9,11 @@ impl super::BatteryProvider for Acpi {
         use crate::provider::freebsd::sysctl_i32;
 
         let units = sysctl_i32(c"hw.acpi.battery.units")?;
+
         if units <= 0 {
             return Err("no ACPI battery found".to_string());
         }
+
         let life = sysctl_i32(c"hw.acpi.battery.life")?;
         let state = sysctl_i32(c"hw.acpi.battery.state")?;
         battery_state(life, state)
@@ -23,10 +25,12 @@ fn battery_state(life: i32, state: i32) -> Result<BatteryState, String> {
     if state == 0x07 {
         return Err("ACPI battery is not present".to_string());
     }
+
     let percent = u8::try_from(life)
         .ok()
         .filter(|percent| *percent <= 100)
         .ok_or_else(|| format!("invalid ACPI battery capacity: {life}"))?;
+
     let status = if state & 0x02 != 0 {
         BatteryStatus::Charging
     } else if state & 0x01 != 0 {
@@ -36,6 +40,7 @@ fn battery_state(life: i32, state: i32) -> Result<BatteryState, String> {
     } else {
         BatteryStatus::Unknown
     };
+
     Ok(BatteryState { percent, status })
 }
 

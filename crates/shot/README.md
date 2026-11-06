@@ -122,3 +122,11 @@ Changes to the backends, clipboard, or PNG output should be verified by running
 
 This project is licensed under the MIT License. See
 [`LICENSE.txt`](../../LICENSE.txt) for the full license text.
+
+## Library errors
+
+`Error::ClipboardFailed` now contains the original `arboard::Error`; match it as
+`ClipboardFailed(source)` or `ClipboardFailed(_)`. PNG decoding failures use
+`Error::Image` and retain the image decoder's cause.
+`Error::X11Connect` and `Error::X11Image` also retain their original boxed error
+instead of a formatted string. Their display messages keep the same prefixes.

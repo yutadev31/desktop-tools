@@ -21,7 +21,9 @@ pub struct MenuPosition {
 pub trait TrayProvider {
     /// Returns the latest complete snapshot when items have changed.
     fn poll_items(&mut self) -> Option<Vec<TrayItem>>;
+
     fn activate(&self, id: &str, secondary: bool);
+
     fn open_menu(&self, id: &str, position: MenuPosition, style: &StyleConfig);
 }
 
@@ -34,5 +36,5 @@ pub fn validate_name(name: &str) -> Result<(), String> {
 
 pub fn create(name: &str) -> Result<Box<dyn TrayProvider>, String> {
     validate_name(name)?;
-    Ok(Box::new(sni::Sni::new()))
+    Ok(Box::new(sni::Sni::new()?))
 }

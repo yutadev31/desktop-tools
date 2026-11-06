@@ -3,8 +3,9 @@ pub(crate) mod i3;
 pub(crate) mod mango;
 pub(crate) mod niri;
 
-use serde::Deserialize;
 use std::{collections::HashMap, sync::Arc, time::Duration};
+
+use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceState {
@@ -30,22 +31,26 @@ pub(crate) struct Workspace {
 
 pub(crate) trait WmClient: Send + Sync {
     fn state(&self) -> Option<WorkspaceState>;
+
     fn switch_to(
         &self,
         workspace_id: i64,
         monitor: Option<&str>,
         local_index: Option<i64>,
     ) -> Result<(), String>;
+
     fn title(&self) -> Option<String>;
 }
 
 fn configured_workspace_names(values: &[i64]) -> Vec<String> {
     let mut unique = Vec::with_capacity(values.len());
+
     for name in values.iter().map(ToString::to_string) {
         if !unique.contains(&name) {
             unique.push(name);
         }
     }
+
     unique
 }
 
@@ -56,20 +61,20 @@ pub(crate) fn connect(persistent_workspaces: &[i64]) -> Arc<dyn WmClient> {
     if let Some(desktop) = std::env::var_os("XDG_CURRENT_DESKTOP") {
         let desktop = desktop.to_string_lossy();
         tracing::debug!(desktop = %desktop, "detecting window manager from XDG_CURRENT_DESKTOP");
+
         let provider = desktop.split(':').find_map(|desktop| match desktop {
             "sway" => Some(
-                i3::I3Client::new("Sway", "SWAYSOCK", RECONNECT_INTERVAL, persistent.clone())
+                i3::I3Client::new("Sway", "SWAYSOCK", RECONNECT_INTERVAL, &persistent.clone())
                     .map(|provider| Arc::new(provider) as Arc<dyn WmClient>),
             ),
             "i3" => Some(
-                i3::I3Client::new("i3", "I3SOCK", RECONNECT_INTERVAL, persistent.clone())
+                i3::I3Client::new("i3", "I3SOCK", RECONNECT_INTERVAL, &persistent.clone())
                     .map(|provider| Arc::new(provider) as Arc<dyn WmClient>),
             ),
             "niri" => Some(
                 niri::NiriClient::new(RECONNECT_INTERVAL)
                     .map(|provider| Arc::new(provider) as Arc<dyn WmClient>),
             ),
-
             "mango" | "Mango" | "mangowm" => Some(
                 mango::MangoClient::new(RECONNECT_INTERVAL)
                     .map(|provider| Arc::new(provider) as Arc<dyn WmClient>),
@@ -105,7 +110,7 @@ fn connect_by_detection(persistent: &[String]) -> Arc<dyn WmClient> {
     const RECONNECT_INTERVAL: Duration = Duration::from_secs(1);
 
     for (name, variable) in [("Sway", "SWAYSOCK"), ("i3", "I3SOCK")] {
-        match i3::I3Client::new(name, variable, RECONNECT_INTERVAL, persistent.to_vec()) {
+        match i3::I3Client::new(name, variable, RECONNECT_INTERVAL, persistent) {
             Ok(provider) => {
                 tracing::debug!(window_manager = name, "selected window manager provider");
                 return Arc::new(provider);
@@ -143,9 +148,11 @@ impl WmClient for UnavailableClient {
     fn state(&self) -> Option<WorkspaceState> {
         None
     }
+
     fn switch_to(&self, _: i64, _: Option<&str>, _: Option<i64>) -> Result<(), String> {
         Err("workspace IPC is unavailable".to_string())
     }
+
     fn title(&self) -> Option<String> {
         None
     }

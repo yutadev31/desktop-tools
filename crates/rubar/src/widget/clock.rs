@@ -34,9 +34,11 @@ impl Clock {
 impl Widget for Clock {
     fn poll_changed(&mut self) -> bool {
         let text = self.format_at(Utc::now());
+
         if self.last_text.as_deref() == Some(&text) {
             return false;
         }
+
         self.last_text = Some(text);
         true
     }

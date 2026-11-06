@@ -1,11 +1,11 @@
+use std::{collections::HashMap, sync::Arc};
+
+use super::{Widget, WidgetButton, WidgetContent};
 use crate::{
     color::parse_rgba,
     config::WorkspaceConfig,
     provider::wm::{WmClient, WorkspaceState},
 };
-use std::{collections::HashMap, sync::Arc};
-
-use super::{Widget, WidgetButton, WidgetContent};
 
 pub struct Workspace {
     format: String,
@@ -16,7 +16,7 @@ pub struct Workspace {
     padding: u32,
     spacing: u32,
     monitor_name: Option<String>,
-    workspace_targets: HashMap<Option<String>, Vec<WorkspaceTarget>>,
+    targets: HashMap<Option<String>, Vec<WorkspaceTarget>>,
     state: Option<WorkspaceState>,
     client: Arc<dyn WmClient>,
 }
@@ -82,7 +82,7 @@ impl Workspace {
             padding: config.padding,
             spacing: config.spacing,
             monitor_name: None,
-            workspace_targets: HashMap::new(),
+            targets: HashMap::new(),
 
             state: None,
             client,
@@ -93,9 +93,11 @@ impl Workspace {
 impl Widget for Workspace {
     fn poll_changed(&mut self) -> bool {
         let state = self.client.state();
+
         if self.state == state {
             return false;
         }
+
         self.state = state;
         true
     }
@@ -106,7 +108,7 @@ impl Widget for Workspace {
 
     fn content(&mut self) -> WidgetContent {
         let Some(state) = self.state.as_ref() else {
-            self.workspace_targets.remove(&self.monitor_name);
+            self.targets.remove(&self.monitor_name);
             return WidgetContent::Buttons(vec![WidgetButton {
                 text: Some(self.format.replace("{workspaces}", "--")),
                 icon: None,
@@ -121,7 +123,7 @@ impl Widget for Workspace {
 
         let active_id = state.active_id.to_string();
         let workspaces = render_workspaces(state, self.monitor_name.as_deref());
-        self.workspace_targets.insert(
+        self.targets.insert(
             self.monitor_name.clone(),
             workspaces.iter().map(WorkspaceTarget::from).collect(),
         );
@@ -137,6 +139,7 @@ impl Widget for Workspace {
                     } else {
                         None
                     };
+
                     let text = self
                         .format
                         .replace("{workspaces}", &workspace.text)
@@ -169,8 +172,9 @@ impl Widget for Workspace {
         if button != super::MouseButton::Left {
             return;
         }
+
         let target = self
-            .workspace_targets
+            .targets
             .get(&self.monitor_name)
             .and_then(|targets| targets.get(item))
             .cloned();
@@ -201,6 +205,7 @@ fn render_workspaces(state: &WorkspaceState, monitor_name: Option<&str>) -> Vec<
     // inactive monitor must not treat that monitor's active workspace as the
     // globally active one.
     let globally_active_id = state.active_id;
+
     state
         .workspaces
         .iter()
@@ -210,11 +215,13 @@ fn render_workspaces(state: &WorkspaceState, monitor_name: Option<&str>) -> Vec<
 
             *index += 1;
             let local_index = workspace.name.parse::<i64>().ok().map(|_| *index);
+
             let text = if local_index.is_some() {
                 index.to_string()
             } else {
                 workspace.name.clone()
             };
+
             RenderedWorkspace {
                 id: workspace.id,
                 monitor: workspace.monitor.clone(),
@@ -231,8 +238,10 @@ fn render_workspaces(state: &WorkspaceState, monitor_name: Option<&str>) -> Vec<
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    };
 
     use super::{RenderedWorkspace, WorkspaceState, render_workspaces};
     use crate::{

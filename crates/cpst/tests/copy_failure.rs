@@ -1,7 +1,9 @@
 #![cfg(target_os = "linux")]
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+};
 
 #[test]
 fn copy_reports_clipboard_connection_failure() {

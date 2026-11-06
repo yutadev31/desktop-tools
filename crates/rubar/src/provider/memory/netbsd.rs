@@ -7,11 +7,13 @@ pub struct UvmExp;
 impl super::MemoryProvider for UvmExp {
     fn read(&mut self) -> Result<MemoryState, String> {
         let bytes = crate::provider::netbsd::sysctl_bytes(c"vm.uvmexp2")?;
+
         // uvmexp_sysctl starts with 64-bit pagesize, pagemask, pageshift,
         // npages, free, active, inactive. NetBSD only appends ABI fields.
         if bytes.len() < 7 * 8 {
             return Err(format!("vm.uvmexp2 returned only {} bytes", bytes.len()));
         }
+
         let field = |index: usize| {
             i64::from_ne_bytes(bytes[index * 8..(index + 1) * 8].try_into().unwrap())
         };

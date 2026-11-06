@@ -32,12 +32,15 @@ impl Renderer {
         let (icon_requests, requests) = mpsc::channel::<String>();
         let (results, icon_results) = mpsc::channel();
         let theme = config.icon_theme.clone();
+
         thread::Builder::new()
             .name("rumenu-icons".into())
             .spawn(move || {
                 let loader = Loader::new([theme]);
+
                 while let Ok(name) = requests.recv() {
                     let icon = loader.load(&name, ICON_SIZE, RasterSize::Target);
+
                     if results.send((name, icon)).is_err() {
                         break;
                     }
@@ -58,6 +61,7 @@ impl Renderer {
 
     pub fn collect_icons(&mut self) -> bool {
         let mut changed = false;
+
         loop {
             match self.icon_results.try_recv() {
                 Ok((name, icon)) => {
@@ -76,9 +80,13 @@ impl Renderer {
                 }
             }
         }
+
         changed
     }
 
+    // tiny-skia uses f32 pixel coordinates; rounding is inherent to its API.
+
+    #[allow(clippy::cast_precision_loss)]
     pub fn render(
         &mut self,
         size: Size,
@@ -110,12 +118,14 @@ impl Renderer {
             self.config.font_size + 2.0,
             &self.config.foreground.clone(),
         );
-        for (row, entry) in entries.iter().enumerate() {
-            let y = 66 + row as i32 * 44;
 
-            if y + 44 > size.height as i32 {
+        for (row, entry) in entries.iter().enumerate() {
+            let y = 66 + i32::try_from(row)? * 44;
+
+            if y + 44 > i32::try_from(size.height).unwrap_or(i32::MAX) {
                 break;
             }
+
             if row == selected {
                 fill_rect(
                     &mut pixmap,
@@ -136,9 +146,11 @@ impl Renderer {
                         tracing::error!("icon loader stopped before accepting requests");
                         self.icon_worker_failed = true;
                     }
+
                     self.pending_icons.remove(icon);
                     self.icons.insert(icon.clone(), None);
                 }
+
                 if let Some(Some(pixels)) = self.icons.get(icon) {
                     draw_icon(&mut pixmap, pixels, 22, y + 5);
                 }
@@ -152,6 +164,7 @@ impl Renderer {
                 self.config.font_size,
                 &self.config.foreground.clone(),
             );
+
             if !entry.comment.is_empty() {
                 self.text(
                     &mut pixmap,
@@ -169,18 +182,24 @@ impl Renderer {
                 &mut pixmap,
                 error,
                 20,
-                size.height as i32 - 25,
+                i32::try_from(size.height).unwrap_or(i32::MAX) - 25,
                 self.config.font_size * 0.8,
                 "#ff6677",
             );
         }
+
         let mut bytes = pixmap.take();
+
         for pixel in bytes.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
+
         Ok(bytes)
     }
 
+    // cosmic-text and tiny-skia exchange floating-point layout and integer pixels.
+
+    #[allow(clippy::cast_precision_loss)]
     fn text(
         &mut self,
         pixmap: &mut Pixmap,
@@ -191,6 +210,8 @@ impl Renderer {
         color_value: &str,
     ) {
         let Ok(rgba) = color(color_value) else { return };
+        // tiny-skia exposes normalized f32 channels; cosmic-text requires bytes.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let text_color = TextColor::rgba(
             (rgba.red() * 255.0) as u8,
             (rgba.green() * 255.0) as u8,
@@ -203,7 +224,7 @@ impl Renderer {
             Metrics::new(font_size, font_size * 1.25),
         );
         buffer.set_size(
-            Some((pixmap.width() as i32 - x - 18).max(1) as f32),
+            Some((i32::try_from(pixmap.width()).unwrap_or(i32::MAX) - x - 18).max(1) as f32),
             Some(font_size * 1.4),
         );
         buffer.set_wrap(Wrap::None);
@@ -220,19 +241,31 @@ impl Renderer {
             |gx, gy, _, _, glyph_color| {
                 let px = x + gx;
                 let py = y + gy;
-                if px < 0 || py < 0 || px >= pixmap.width() as i32 || py >= pixmap.height() as i32 {
+
+                if px < 0
+                    || py < 0
+                    || px >= i32::try_from(pixmap.width()).unwrap_or(i32::MAX)
+                    || py >= i32::try_from(pixmap.height()).unwrap_or(i32::MAX)
+                {
                     return;
                 }
-                let offset = (py as usize * pixmap.width() as usize + px as usize) * 4;
+
+                let offset = (py.cast_unsigned() as usize * pixmap.width() as usize
+                    + px.cast_unsigned() as usize)
+                    * 4;
                 let [sr, sg, sb, alpha] = glyph_color.as_rgba();
                 let data = pixmap.data_mut();
-                let inverse = 255 - alpha as u16;
+                let inverse = 255 - u16::from(alpha);
 
                 for (i, source) in [sr, sg, sb].into_iter().enumerate() {
-                    data[offset + i] = ((u16::from(source) * u16::from(alpha)
-                        + u16::from(data[offset + i]) * inverse)
-                        / 255) as u8;
+                    data[offset + i] = u8::try_from(
+                        (u16::from(source) * u16::from(alpha)
+                            + u16::from(data[offset + i]) * inverse)
+                            / 255,
+                    )
+                    .expect("blended channel is at most 255");
                 }
+
                 data[offset + 3] = 255;
             },
         );
@@ -269,23 +302,31 @@ fn draw_icon(pixmap: &mut Pixmap, icon: &Icon, x: i32, y: i32) {
     {
         return;
     }
-    for row in 0..icon.height as i32 {
-        for col in 0..icon.width as i32 {
+
+    for row in 0..i32::try_from(icon.height).unwrap_or(i32::MAX) {
+        for col in 0..i32::try_from(icon.width).unwrap_or(i32::MAX) {
             let px = x + col;
             let py = y + row;
-            if px < 0 || py < 0 || px >= pixmap.width() as i32 || py >= pixmap.height() as i32 {
+
+            if px < 0
+                || py < 0
+                || px >= i32::try_from(pixmap.width()).unwrap_or(i32::MAX)
+                || py >= i32::try_from(pixmap.height()).unwrap_or(i32::MAX)
+            {
                 continue;
             }
 
-            let source = ((row as u32 * icon.width + col as u32) * 4) as usize;
-            let target = ((py as u32 * pixmap.width() + px as u32) * 4) as usize;
-            let alpha = icon.pixels[source + 3] as u16;
+            let source = ((row.cast_unsigned() * icon.width + col.cast_unsigned()) * 4) as usize;
+            let target = ((py.cast_unsigned() * pixmap.width() + px.cast_unsigned()) * 4) as usize;
+            let alpha = u16::from(icon.pixels[source + 3]);
             let data = pixmap.data_mut();
+
             for channel in 0..3 {
-                data[target + channel] = (icon.pixels[source + channel] as u16
-                    + data[target + channel] as u16 * (255 - alpha) / 255)
+                data[target + channel] = (u16::from(icon.pixels[source + channel])
+                    + u16::from(data[target + channel]) * (255 - alpha) / 255)
                     .min(255) as u8;
             }
+
             data[target + 3] = 255;
         }
     }
@@ -293,11 +334,12 @@ fn draw_icon(pixmap: &mut Pixmap, icon: &Icon, x: i32, y: i32) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::{
         fs,
         time::{Duration, Instant},
     };
+
+    use super::*;
 
     #[test]
     fn blends_premultiplied_icon_pixels() {
@@ -351,9 +393,11 @@ mod tests {
         assert_eq!(renderer.pending_icons.len(), 1);
 
         let deadline = Instant::now() + Duration::from_secs(5);
+
         while !renderer.collect_icons() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
+
         assert!(
             renderer
                 .icons

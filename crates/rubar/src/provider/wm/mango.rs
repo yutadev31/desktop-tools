@@ -1,6 +1,3 @@
-use super::{WmClient, Workspace, WorkspaceState};
-use serde::Deserialize;
-use serde_json::Value;
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Write},
@@ -10,6 +7,11 @@ use std::{
     thread,
     time::Duration,
 };
+
+use serde::Deserialize;
+use serde_json::Value;
+
+use super::{WmClient, Workspace, WorkspaceState};
 
 #[derive(Deserialize)]
 struct MonitorsResponse {
@@ -53,6 +55,7 @@ impl MangoClient {
 
         let state_socket = socket.clone();
         let shared_state = Arc::clone(&state);
+
         thread::spawn(move || {
             watch_events(
                 &state_socket,
@@ -66,7 +69,7 @@ impl MangoClient {
                         ),
                     },
                     Err(error) => {
-                        tracing::warn!("rubar: could not parse MangoWM monitors: {error}")
+                        tracing::warn!("rubar: could not parse MangoWM monitors: {error}");
                     }
                 },
             );
@@ -74,6 +77,7 @@ impl MangoClient {
 
         let title_socket = socket.clone();
         let shared_title = Arc::clone(&title);
+
         thread::spawn(move || {
             watch_events(
                 &title_socket,
@@ -83,11 +87,13 @@ impl MangoClient {
                     Ok(next) => match shared_title.write() {
                         Ok(mut current) => *current = next,
                         Err(error) => {
-                            tracing::error!("rubar: could not update MangoWM window title: {error}")
+                            tracing::error!(
+                                "rubar: could not update MangoWM window title: {error}"
+                            );
                         }
                     },
                     Err(error) => {
-                        tracing::warn!("rubar: could not parse MangoWM focused client: {error}")
+                        tracing::warn!("rubar: could not parse MangoWM focused client: {error}");
                     }
                 },
             );
@@ -120,9 +126,11 @@ impl WmClient for MangoClient {
     ) -> Result<(), String> {
         let monitor = monitor.ok_or("MangoWM workspace has no monitor")?;
         let tag = workspace_id % 32;
+
         if !(1..=31).contains(&tag) {
             return Err(format!("invalid MangoWM tag {tag}"));
         }
+
         if monitor.contains([',', '\n', '\r']) {
             return Err(format!("invalid MangoWM monitor name {monitor:?}"));
         }
@@ -131,6 +139,7 @@ impl WmClient for MangoClient {
             &self.socket,
             &format!("dispatch viewcrossmon,{tag},{monitor}"),
         )?;
+
         if response.get("success") == Some(&Value::Bool(true)) {
             Ok(())
         } else {
@@ -160,11 +169,14 @@ fn parse_monitors(value: Value) -> Result<WorkspaceState, String> {
     let mut active_ids = HashMap::new();
     let mut active_id = 0;
     let mut active_monitor_id = 0;
+
     for (index, monitor) in monitors.into_iter().enumerate() {
-        let monitor_id = index as i64 + 1;
+        let monitor_id = i64::try_from(index).expect("allocated workspace count fits in i64") + 1;
+
         if monitor.active {
             active_monitor_id = monitor_id;
         }
+
         for tag in monitor.tags {
             if !(1..=31).contains(&tag.index) {
                 return Err(format!(
@@ -174,12 +186,15 @@ fn parse_monitors(value: Value) -> Result<WorkspaceState, String> {
             }
 
             let id = monitor_id * 32 + tag.index;
+
             if tag.is_active {
                 active_ids.entry(monitor.name.clone()).or_insert(id);
+
                 if monitor.active && active_id == 0 {
                     active_id = id;
                 }
             }
+
             workspaces.push(Workspace {
                 id,
                 name: tag.index.to_string(),
@@ -220,6 +235,7 @@ fn watch_events(
             Ok(()) => tracing::warn!("rubar: MangoWM {command} stream closed; reconnecting"),
             Err(error) => tracing::warn!("rubar: MangoWM {command} stream failed: {error}"),
         }
+
         thread::sleep(reconnect_interval);
     }
 }
@@ -234,12 +250,14 @@ fn watch_once(
     stream
         .write_all(format!("{command}\n").as_bytes())
         .map_err(|error| format!("could not send {command}: {error}"))?;
+
     for line in BufReader::new(stream).lines() {
         let line = line.map_err(|error| format!("could not read {command}: {error}"))?;
         let value = serde_json::from_str(&line)
             .map_err(|error| format!("could not parse {command} response: {error}"))?;
         on_event(value);
     }
+
     Ok(())
 }
 
@@ -262,15 +280,17 @@ fn request(socket: &PathBuf, command: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MangoClient, parse_monitors, parse_title};
-    use crate::provider::wm::WmClient;
-    use serde_json::json;
     use std::{
         io::{BufRead, BufReader, Write},
         os::unix::net::UnixListener,
         sync::{Arc, RwLock},
         thread,
     };
+
+    use serde_json::json;
+
+    use super::{MangoClient, parse_monitors, parse_title};
+    use crate::provider::wm::WmClient;
 
     #[test]
     fn maps_tags_on_multiple_monitors() {
@@ -308,6 +328,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("mango.sock");
         let listener = UnixListener::bind(&socket).unwrap();
+
         let server = thread::spawn(move || {
             for response in [r#"{"success":true}"#, r#"{"error":"unknown monitor"}"#] {
                 let (mut stream, _) = listener.accept().unwrap();

@@ -23,6 +23,7 @@ pub struct Entry {
 pub fn scan(terminal_available: bool) -> Vec<Entry> {
     let mut seen = HashSet::new();
     let mut entries = Vec::new();
+
     for base in data_dirs() {
         visit(
             &base.join("applications"),
@@ -32,6 +33,7 @@ pub fn scan(terminal_available: bool) -> Vec<Entry> {
             terminal_available,
         );
     }
+
     entries.sort_by_key(|entry| entry.name.to_lowercase());
     entries
 }
@@ -73,7 +75,9 @@ fn visit(
                 continue;
             }
         };
+
         let path = item.path();
+
         let file_type = match item.file_type() {
             Ok(file_type) => file_type,
             Err(error) => {
@@ -91,15 +95,16 @@ fn visit(
                 continue;
             };
             let id = relative.to_string_lossy().replace('/', "-");
+
             if !seen.insert(id) {
                 continue;
             }
+
             match parse(&path, terminal_available) {
                 Ok(Some(entry)) => entries.push(entry),
                 Ok(None) => {}
-
                 Err(error) => {
-                    tracing::warn!(path = %path.display(), %error, "invalid desktop entry")
+                    tracing::warn!(path = %path.display(), %error, "invalid desktop entry");
                 }
             }
         }
@@ -110,8 +115,10 @@ fn parse(path: &Path, terminal_available: bool) -> Result<Option<Entry>, Box<dyn
     let contents = fs::read_to_string(path)?;
     let mut fields = HashMap::new();
     let mut in_desktop_entry = false;
+
     for line in contents.lines() {
         let line = line.trim();
+
         if line.starts_with('[') && line.ends_with(']') {
             in_desktop_entry = line == "[Desktop Entry]";
         } else if in_desktop_entry
@@ -128,8 +135,10 @@ fn parse(path: &Path, terminal_available: bool) -> Result<Option<Entry>, Box<dyn
     {
         return Ok(None);
     }
+
     let desktop = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
     let desktops = desktop.split(':').collect::<Vec<_>>();
+
     if fields
         .get("OnlyShowIn")
         .is_some_and(|v| !list(v).iter().any(|name| desktops.contains(name)))
@@ -146,10 +155,13 @@ fn parse(path: &Path, terminal_available: bool) -> Result<Option<Entry>, Box<dyn
     {
         return Ok(None);
     }
+
     let terminal = fields.get("Terminal").is_some_and(|v| v == "true");
+
     if terminal && !terminal_available {
         return Ok(None);
     }
+
     let Some(name) = localized(&fields, "Name") else {
         return Ok(None);
     };
@@ -194,6 +206,7 @@ fn localized(fields: &HashMap<String, String>, key: &str) -> Option<String> {
 fn unescape(value: &str) -> String {
     let mut result = String::new();
     let mut chars = value.chars();
+
     while let Some(ch) = chars.next() {
         if ch == '\\' {
             result.push(match chars.next() {
@@ -201,10 +214,9 @@ fn unescape(value: &str) -> String {
                 Some('n') => '\n',
                 Some('t') => '\t',
                 Some('r') => '\r',
-                Some('\\') => '\\',
                 Some(';') => ';',
+                Some('\\') | None => '\\',
                 Some(other) => other,
-                None => '\\',
             });
         } else {
             result.push(ch);
@@ -220,9 +232,11 @@ fn executable_exists(name: &str) -> bool {
             .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
     };
     let candidate = Path::new(name);
+
     if candidate.components().count() > 1 {
         return is_executable(candidate);
     }
+
     env::var_os("PATH")
         .is_some_and(|path| env::split_paths(&path).any(|dir| is_executable(&dir.join(name))))
 }
@@ -239,6 +253,7 @@ pub fn launch(entry: &Entry, terminal: &[String]) -> Result<(), Box<dyn Error>> 
     let (program, arguments) = args
         .split_first()
         .ok_or("desktop entry has an empty Exec")?;
+
     let mut command = if entry.terminal {
         let (terminal_program, terminal_args) =
             terminal.split_first().ok_or("terminal is not configured")?;
@@ -254,36 +269,45 @@ pub fn launch(entry: &Entry, terminal: &[String]) -> Result<(), Box<dyn Error>> 
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+
     if let Some(dir) = &entry.working_dir {
         command.current_dir(dir);
     }
+
     let mut child = command.spawn()?;
+
     std::thread::spawn(move || {
         if let Err(error) = child.wait() {
             tracing::warn!(%error, "failed to reap launched application");
         }
     });
+
     Ok(())
 }
 
 fn expand_exec(entry: &Entry) -> Result<Vec<String>, Box<dyn Error>> {
     let mut args = Vec::new();
+
     for token in tokenize(&entry.exec)? {
         if token == "%i" {
             if let Some(icon) = &entry.icon {
                 args.push("--icon".into());
                 args.push(icon.clone());
             }
+
             continue;
         }
+
         let mut result = String::new();
         let mut chars = token.chars();
+
         while let Some(ch) = chars.next() {
             if ch != '%' {
                 result.push(ch);
 
                 continue;
             }
+
             match chars.next().ok_or("trailing % in Exec")? {
                 '%' => result.push('%'),
                 'c' => result.push_str(&entry.name),
@@ -292,10 +316,12 @@ fn expand_exec(entry: &Entry) -> Result<Vec<String>, Box<dyn Error>> {
                 other => return Err(format!("unsupported Exec field code %{other}").into()),
             }
         }
+
         if !result.is_empty() {
             args.push(result);
         }
     }
+
     Ok(args)
 }
 
@@ -304,6 +330,7 @@ fn tokenize(value: &str) -> Result<Vec<String>, Box<dyn Error>> {
     let mut token = String::new();
     let mut quoted = false;
     let mut escaped = false;
+
     for ch in value.chars() {
         if escaped {
             token.push(ch);
@@ -321,6 +348,7 @@ fn tokenize(value: &str) -> Result<Vec<String>, Box<dyn Error>> {
             token.push(ch);
         }
     }
+
     if quoted || escaped {
         return Err("unterminated Exec quotation".into());
     }
@@ -328,14 +356,17 @@ fn tokenize(value: &str) -> Result<Vec<String>, Box<dyn Error>> {
     if !token.is_empty() {
         args.push(token);
     }
+
     Ok(args)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::os::unix::fs::symlink;
+
     use tempfile::tempdir;
+
+    use super::*;
 
     fn desktop(path: &Path, body: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();

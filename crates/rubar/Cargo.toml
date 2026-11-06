@@ -28,3 +28,6 @@ tempfile.workspace = true
 
 [target.'cfg(target_os = "netbsd")'.dependencies]
 libc.workspace = true
+
+[lints]
+workspace = true

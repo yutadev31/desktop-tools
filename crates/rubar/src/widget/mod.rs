@@ -53,6 +53,7 @@ pub struct WidgetGroups {
 impl WidgetGroups {
     pub fn poll_changed(&mut self) -> bool {
         let mut changed = false;
+
         for widget in self
             .left
             .iter_mut()
@@ -61,6 +62,7 @@ impl WidgetGroups {
         {
             changed |= widget.poll_changed();
         }
+
         changed
     }
 

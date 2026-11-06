@@ -18,6 +18,7 @@ pub(super) fn sysctl_exact<T: Copy>(name: &CStr) -> Result<T, String> {
             0,
         )
     };
+
     if result != 0 {
         return Err(format!(
             "could not read {}: {}",
@@ -25,6 +26,7 @@ pub(super) fn sysctl_exact<T: Copy>(name: &CStr) -> Result<T, String> {
             io::Error::last_os_error()
         ));
     }
+
     if len != size_of::<T>() {
         return Err(format!(
             "unexpected size for {}: {len} bytes, expected {}",
@@ -32,6 +34,7 @@ pub(super) fn sysctl_exact<T: Copy>(name: &CStr) -> Result<T, String> {
             size_of::<T>()
         ));
     }
+
     // SAFETY: sysctl filled the complete value.
     Ok(unsafe { value.assume_init() })
 }
@@ -43,6 +46,7 @@ pub(super) fn sysctl_bytes(name: &CStr) -> Result<Vec<u8>, String> {
         let result = unsafe {
             libc::sysctlbyname(name.as_ptr(), ptr::null_mut(), &mut len, ptr::null_mut(), 0)
         };
+
         if result != 0 {
             return Err(format!(
                 "could not size {}: {}",
@@ -50,9 +54,11 @@ pub(super) fn sysctl_bytes(name: &CStr) -> Result<Vec<u8>, String> {
                 io::Error::last_os_error()
             ));
         }
+
         if len == 0 {
             return Err(format!("{} returned no data", name.to_string_lossy()));
         }
+
         let mut bytes = vec![0u8; len];
         // SAFETY: the vector owns `len` writable bytes.
         let result = unsafe {
@@ -64,11 +70,14 @@ pub(super) fn sysctl_bytes(name: &CStr) -> Result<Vec<u8>, String> {
                 0,
             )
         };
+
         if result == 0 {
             bytes.truncate(len);
             return Ok(bytes);
         }
+
         let error = io::Error::last_os_error();
+
         if error.raw_os_error() != Some(libc::ENOMEM) {
             return Err(format!(
                 "could not read {}: {error}",
@@ -76,6 +85,7 @@ pub(super) fn sysctl_bytes(name: &CStr) -> Result<Vec<u8>, String> {
             ));
         }
     }
+
     Err(format!(
         "{} kept growing while reading it",
         name.to_string_lossy()

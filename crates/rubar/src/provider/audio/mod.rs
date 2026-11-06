@@ -8,8 +8,10 @@ use std::{
 use libpulse_binding as pulse;
 use pulse::{
     callbacks::ListResult,
-    context::introspect::{SinkInfo, SourceInfo},
-    context::subscribe::{self, InterestMaskSet},
+    context::{
+        introspect::{SinkInfo, SourceInfo},
+        subscribe::{self, InterestMaskSet},
+    },
     mainloop::threaded::Mainloop,
     operation::{Operation, State as OperationState},
 };
@@ -87,8 +89,10 @@ fn complete_operation<C: ?Sized>(
     while operation.get_state() == OperationState::Running {
         mainloop.borrow_mut().wait();
     }
+
     let cancelled = operation.get_state() == OperationState::Cancelled;
     mainloop.borrow_mut().unlock();
+
     if cancelled {
         Err(cancelled_message.to_string())
     } else {
@@ -97,8 +101,7 @@ fn complete_operation<C: ?Sized>(
 }
 
 fn pulse_volume(percent: u8) -> pulse::volume::Volume {
-    let value =
-        ((f64::from(percent) / 100.0) * f64::from(pulse::volume::Volume::NORMAL.0)).round() as u32;
+    let value = (u32::from(percent) * pulse::volume::Volume::NORMAL.0 + 50) / 100;
     pulse::volume::Volume(value)
 }
 
@@ -115,19 +118,26 @@ impl PulseAudio {
 
         let mainloop_ref = Rc::clone(&mainloop);
         let context_ref = Rc::clone(&context);
+
         context
             .borrow_mut()
             .set_state_callback(Some(Box::new(move || {
+                // SAFETY: The captured Rc keeps the context alive; PulseAudio serializes
+                // this state callback with context access under the threaded mainloop lock.
                 let state = unsafe { (*context_ref.as_ptr()).get_state() };
+
                 if matches!(
                     state,
                     pulse::context::State::Ready
                         | pulse::context::State::Failed
                         | pulse::context::State::Terminated
                 ) {
+                    // SAFETY: The captured Rc keeps the mainloop alive. This callback runs
+                    // with its PulseAudio lock held, as required by pa_threaded_mainloop_signal.
                     unsafe { (*mainloop_ref.as_ptr()).signal(false) };
                 }
             })));
+
         context
             .borrow_mut()
             .connect(None, pulse::context::FlagSet::NOFLAGS, None)
@@ -138,6 +148,7 @@ impl PulseAudio {
             .borrow_mut()
             .start()
             .map_err(|error| format!("could not start PulseAudio mainloop: {error:?}"))?;
+
         loop {
             match context.borrow().get_state() {
                 pulse::context::State::Ready => break,
@@ -149,6 +160,7 @@ impl PulseAudio {
                 _ => mainloop.borrow_mut().wait(),
             }
         }
+
         context.borrow_mut().set_state_callback(None);
         mainloop.borrow_mut().unlock();
 
@@ -156,8 +168,8 @@ impl PulseAudio {
         install_subscription(&context, &mainloop, &state)?;
 
         Ok(Self {
-            mainloop,
             context,
+            mainloop,
             state,
         })
     }
@@ -181,6 +193,7 @@ impl PulseAudio {
         let default_name = Rc::new(RefCell::new(None));
         let default_name_ref = Rc::clone(&default_name);
         let mainloop_ref = Rc::clone(&self.mainloop);
+
         let operation = self
             .context
             .borrow()
@@ -192,8 +205,11 @@ impl PulseAudio {
                 }
                 .map(ToString::to_string);
 
+                // SAFETY: The captured Rc keeps the mainloop alive. This callback runs
+                // with its PulseAudio lock held, as required by pa_threaded_mainloop_signal.
                 unsafe { (*mainloop_ref.as_ptr()).signal(false) };
             });
+
         complete_operation(
             &self.mainloop,
             &operation,
@@ -206,15 +222,20 @@ impl PulseAudio {
         let device = Rc::new(RefCell::new(None));
         let mainloop_ref = Rc::clone(&self.mainloop);
         self.mainloop.borrow_mut().lock();
+
         match kind {
             DeviceKind::Sink => {
                 let device_ref = Rc::clone(&device);
+
                 let operation = self.context.borrow().introspect().get_sink_info_by_name(
                     &name,
                     move |result| {
                         if let ListResult::Item(info) = result {
                             *device_ref.borrow_mut() = Some(DeviceInfo::Sink(info.to_owned()));
                         }
+
+                        // SAFETY: The captured Rc keeps the mainloop alive. This callback runs
+                        // with its PulseAudio lock held, as required by pa_threaded_mainloop_signal.
                         unsafe { (*mainloop_ref.as_ptr()).signal(false) };
                     },
                 );
@@ -227,6 +248,7 @@ impl PulseAudio {
             }
             DeviceKind::Source => {
                 let device_ref = Rc::clone(&device);
+
                 let operation = self.context.borrow().introspect().get_source_info_by_name(
                     &name,
                     move |result| {
@@ -234,9 +256,12 @@ impl PulseAudio {
                             *device_ref.borrow_mut() = Some(DeviceInfo::Source(info.to_owned()));
                         }
 
+                        // SAFETY: The captured Rc keeps the mainloop alive. This callback runs
+                        // with its PulseAudio lock held, as required by pa_threaded_mainloop_signal.
                         unsafe { (*mainloop_ref.as_ptr()).signal(false) };
                     },
                 );
+
                 complete_operation(
                     &self.mainloop,
                     &operation,
@@ -244,6 +269,7 @@ impl PulseAudio {
                 )?;
             }
         }
+
         device
             .borrow_mut()
             .take()
@@ -253,12 +279,17 @@ impl PulseAudio {
 
 impl VolumeProvider for PulseAudio {
     fn read(&mut self) -> Result<VolumeState, String> {
-        if let Some(state) = *self.state.lock().unwrap() {
+        if let Some(state) = *self
+            .state
+            .lock()
+            .map_err(|error| format!("PulseAudio state lock poisoned: {error}"))?
+        {
             return Ok(state);
         }
 
         let sink = self.read_default_sink()?;
         let percent = volume_percent(sink.volume.avg().0);
+
         let input = match self.read_default_source() {
             Ok(source) => Some(VolumeChannelState {
                 percent: volume_percent(source.volume.avg().0),
@@ -269,6 +300,7 @@ impl VolumeProvider for PulseAudio {
                 None
             }
         };
+
         let state = VolumeState {
             output: Some(VolumeChannelState {
                 percent,
@@ -277,7 +309,10 @@ impl VolumeProvider for PulseAudio {
 
             input,
         };
-        *self.state.lock().unwrap() = Some(state);
+        *self
+            .state
+            .lock()
+            .map_err(|error| format!("PulseAudio state lock poisoned: {error}"))? = Some(state);
         Ok(state)
     }
 
@@ -292,6 +327,8 @@ impl VolumeProvider for PulseAudio {
             muted,
             Some(Box::new(move |success| {
                 *result_ref.borrow_mut() = Some(success);
+                // SAFETY: The captured Rc keeps the mainloop alive. This callback runs
+                // with its PulseAudio lock held, as required by pa_threaded_mainloop_signal.
                 unsafe { (*mainloop_ref.as_ptr()).signal(false) };
             })),
         );
@@ -301,6 +338,7 @@ impl VolumeProvider for PulseAudio {
             &operation,
             "PulseAudio volume operation was cancelled",
         )?;
+
         if result.borrow_mut().take().unwrap_or(false) {
             Ok(())
         } else {
@@ -319,6 +357,8 @@ impl VolumeProvider for PulseAudio {
             sink.index,
             &volumes,
             Some(Box::new(move |_| {
+                // SAFETY: The captured Rc keeps the mainloop alive. This callback runs
+                // with its PulseAudio lock held, as required by pa_threaded_mainloop_signal.
                 unsafe { (*mainloop_ref.as_ptr()).signal(false) };
             })),
         );
@@ -337,6 +377,8 @@ impl VolumeProvider for PulseAudio {
             source.index,
             muted,
             Some(Box::new(move |_| {
+                // SAFETY: The captured Rc keeps the mainloop alive. This callback runs
+                // with its PulseAudio lock held, as required by pa_threaded_mainloop_signal.
                 unsafe { (*mainloop_ref.as_ptr()).signal(false) };
             })),
         );
@@ -362,6 +404,8 @@ impl VolumeProvider for PulseAudio {
                 source.index,
                 &volumes,
                 Some(Box::new(move |_| {
+                    // SAFETY: The captured Rc keeps the mainloop alive. This callback runs
+                    // with its PulseAudio lock held, as required by pa_threaded_mainloop_signal.
                     unsafe { (*mainloop_ref.as_ptr()).signal(false) };
                 })),
             );
@@ -382,6 +426,7 @@ fn install_subscription(
     let state = Arc::clone(state);
 
     mainloop.borrow_mut().lock();
+
     context.borrow_mut().set_subscribe_callback(Some(Box::new(
         move |facility, operation, _index| {
             if !matches!(
@@ -412,18 +457,24 @@ fn install_subscription(
     let completed = Rc::new(RefCell::new(None));
     let completed_ref = Rc::clone(&completed);
     let mainloop_ref = Rc::downgrade(mainloop);
+
     let operation = context.borrow_mut().subscribe(
         InterestMaskSet::SINK | InterestMaskSet::SOURCE | InterestMaskSet::SERVER,
         move |success| {
             *completed_ref.borrow_mut() = Some(success);
+
             if let Some(mainloop) = mainloop_ref.upgrade() {
+                // SAFETY: The captured Rc keeps the mainloop alive. This callback runs
+                // with its PulseAudio lock held, as required by pa_threaded_mainloop_signal.
                 unsafe { (*mainloop.as_ptr()).signal(false) };
             }
         },
     );
+
     while operation.get_state() != pulse::operation::State::Done {
         mainloop.borrow_mut().wait();
     }
+
     let success = completed.borrow_mut().take().unwrap_or(false);
     let cancelled = operation.get_state() == pulse::operation::State::Cancelled;
     mainloop.borrow_mut().unlock();
@@ -441,18 +492,27 @@ fn refresh_async(
 ) {
     let state_for_server = Arc::clone(state);
     let context_for_server = Rc::clone(context);
+
     context.borrow().introspect().get_server_info(move |info| {
         let sink_name = info.default_sink_name.as_ref().map(ToString::to_string);
         let source_name = info.default_source_name.as_ref().map(ToString::to_string);
 
         if let Some(name) = sink_name {
             let state = Arc::clone(&state_for_server);
+
             context_for_server
                 .borrow()
                 .introspect()
                 .get_sink_info_by_name(&name, move |result| {
                     if let ListResult::Item(info) = result {
-                        let mut current = state.lock().unwrap();
+                        let mut current = match state.lock() {
+                            Ok(current) => current,
+                            Err(error) => {
+                                tracing::error!("PulseAudio state lock poisoned: {error}");
+                                return;
+                            }
+                        };
+
                         let input = current.and_then(|state| state.input);
                         *current = Some(VolumeState {
                             output: Some(VolumeChannelState {
@@ -467,12 +527,20 @@ fn refresh_async(
 
         if let Some(name) = source_name {
             let state = Arc::clone(&state_for_server);
+
             context_for_server
                 .borrow()
                 .introspect()
                 .get_source_info_by_name(&name, move |result| {
                     if let ListResult::Item(info) = result {
-                        let mut current = state.lock().unwrap();
+                        let mut current = match state.lock() {
+                            Ok(current) => current,
+                            Err(error) => {
+                                tracing::error!("PulseAudio state lock poisoned: {error}");
+                                return;
+                            }
+                        };
+
                         let output = current.and_then(|state| state.output);
                         *current = Some(VolumeState {
                             output,
@@ -489,9 +557,12 @@ fn refresh_async(
 }
 
 fn volume_percent(value: u32) -> u8 {
-    ((value as f64 / pulse::volume::Volume::NORMAL.0 as f64) * 100.0)
-        .round()
-        .clamp(0.0, 255.0) as u8
+    u8::try_from(
+        ((u64::from(value) * 100 + u64::from(pulse::volume::Volume::NORMAL.0) / 2)
+            / u64::from(pulse::volume::Volume::NORMAL.0))
+        .min(255),
+    )
+    .expect("volume is clamped to 255")
 }
 
 #[cfg(test)]

@@ -1,6 +1,3 @@
-use super::{WmClient, Workspace, WorkspaceState};
-use serde::Deserialize;
-use socket2::{Domain, SockAddr, SockRef, Socket, Type};
 use std::{
     collections::HashMap,
     io::{ErrorKind, Read, Write},
@@ -14,6 +11,11 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+use serde::Deserialize;
+use socket2::{Domain, SockAddr, SockRef, Socket, Type};
+
+use super::{WmClient, Workspace, WorkspaceState};
 
 const STATE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const FAILED_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -97,11 +99,12 @@ impl I3Client {
         wm_name: &'static str,
         socket_variable: &str,
         reconnect_interval: Duration,
-        persistent_workspaces: Vec<String>,
+        persistent_workspaces: &[String],
     ) -> Result<Self, String> {
         let socket = std::env::var_os(socket_variable)
             .map(PathBuf::from)
             .ok_or_else(|| format!("{socket_variable} is not set"))?;
+
         if !socket.exists() {
             return Err(format!(
                 "{wm_name} socket does not exist: {}",
@@ -117,18 +120,18 @@ impl I3Client {
         let event_socket = socket.clone();
         let shared_state = Arc::clone(&state);
         let shared_names = Arc::clone(&workspace_names);
-        let event_persistent_workspaces = persistent_workspaces.clone();
+        let event_persistent_workspaces = persistent_workspaces.to_owned();
         let (title_requests, title_events) = sync_channel(1);
         let title_socket = socket.clone();
         let shared_title = Arc::clone(&title);
         thread::spawn(move || {
             title_loop(
                 wm_name,
-                title_socket,
-                shared_title,
-                title_events,
+                &title_socket,
+                &shared_title,
+                &title_events,
                 TITLE_RETRY_INTERVAL,
-            )
+            );
         });
 
         let event_title = Arc::clone(&title);
@@ -136,8 +139,8 @@ impl I3Client {
         thread::spawn(move || {
             ipc_event_loop(
                 event_wm_name,
-                event_socket,
-                EventState {
+                &event_socket,
+                &EventState {
                     workspaces: shared_state,
                     workspace_names: shared_names,
                     persistent_workspaces: event_persistent_workspaces,
@@ -145,7 +148,7 @@ impl I3Client {
                     title_requests,
                 },
                 reconnect_interval,
-            )
+            );
         });
 
         Ok(Self {
@@ -190,9 +193,11 @@ impl WmClient for I3Client {
         let result = parse_ipc_command_response(&response).map_err(|error| {
             format!("could not parse {} command response: {error}", self.wm_name)
         })?;
+
         if !result {
             return Err(format!("{} rejected workspace {name}", self.wm_name));
         }
+
         Ok(())
     }
 
@@ -224,6 +229,7 @@ enum IpcCommandResponse {
 
 fn parse_ipc_command_response(response: &[u8]) -> Result<bool, serde_json::Error> {
     let response: IpcCommandResponse = serde_json::from_slice(response)?;
+
     Ok(match response {
         IpcCommandResponse::Single(result) => result.success,
         IpcCommandResponse::Multiple(results) => {
@@ -244,14 +250,17 @@ fn update_ipc_state(
         .map_err(|error| format!("could not parse {wm_name} workspaces: {error}"))?;
 
     let (new_state, names) = workspace_snapshot(&raw, persistent_workspaces);
+
     match state.write() {
         Ok(mut target) => *target = Some(new_state),
         Err(error) => tracing::error!("rubar: could not update {wm_name} workspace state: {error}"),
     }
+
     match workspace_names.write() {
         Ok(mut target) => *target = names,
         Err(error) => tracing::error!("rubar: could not update {wm_name} workspace names: {error}"),
     }
+
     Ok(())
 }
 
@@ -260,8 +269,10 @@ fn workspace_snapshot(
     persistent_workspaces: &[String],
 ) -> (WorkspaceState, HashMap<i64, String>) {
     let mut output_ids = HashMap::new();
+
     for workspace in raw {
-        let next_id = output_ids.len() as i64;
+        let next_id =
+            i64::try_from(output_ids.len()).expect("allocated workspace count fits in i64");
         output_ids
             .entry(workspace.output.clone())
             .or_insert(next_id);
@@ -275,6 +286,7 @@ fn workspace_snapshot(
         .unwrap_or_default();
     let mut used = vec![false; raw.len()];
     let mut specs = Vec::new();
+
     for name in persistent_workspaces {
         if let Some((index, workspace)) = raw
             .iter()
@@ -296,6 +308,7 @@ fn workspace_snapshot(
             });
         }
     }
+
     specs.extend(
         raw.iter()
             .enumerate()
@@ -308,7 +321,7 @@ fn workspace_snapshot(
         .iter()
         .enumerate()
         .map(|(index, spec)| {
-            let id = index as i64 + 1;
+            let id = i64::try_from(index).expect("allocated workspace count fits in i64") + 1;
             names.insert(id, spec.name.clone());
             Workspace {
                 id,
@@ -323,7 +336,7 @@ fn workspace_snapshot(
 
     let active_index = specs.iter().position(|spec| spec.focused);
     let active_id = active_index
-        .map(|index| index as i64 + 1)
+        .map(|index| i64::try_from(index).expect("allocated workspace count fits in i64") + 1)
         .unwrap_or_default();
     let active_monitor_id = active_index
         .and_then(|index| workspaces.get(index))
@@ -333,7 +346,12 @@ fn workspace_snapshot(
         .iter()
         .enumerate()
         .filter(|(_, spec)| spec.visible)
-        .map(|(index, spec)| (spec.output.clone(), index as i64 + 1))
+        .map(|(index, spec)| {
+            (
+                spec.output.clone(),
+                i64::try_from(index).expect("allocated workspace count fits in i64") + 1,
+            )
+        })
         .collect();
 
     (
@@ -349,17 +367,18 @@ fn workspace_snapshot(
 
 fn ipc_event_loop(
     wm_name: &str,
-    socket: PathBuf,
-    event_state: EventState,
+    socket: &Path,
+    event_state: &EventState,
     reconnect_interval: Duration,
 ) {
     loop {
-        match subscribe_to_events(&socket) {
-            Ok(mut stream) => watch_events(wm_name, &socket, &mut stream, &event_state),
+        match subscribe_to_events(socket) {
+            Ok(mut stream) => watch_events(wm_name, socket, &mut stream, event_state),
             Err(error) => {
-                tracing::warn!("rubar: could not subscribe to {wm_name} events: {error}")
+                tracing::warn!("rubar: could not subscribe to {wm_name} events: {error}");
             }
         }
+
         thread::sleep(reconnect_interval);
     }
 }
@@ -380,8 +399,10 @@ fn watch_events(wm_name: &str, socket: &Path, stream: &mut UnixStream, event_sta
     request_title_update(wm_name, &event_state.title, &event_state.title_requests);
     // Reconcile state even if an event is missed or a snapshot fails.
     let mut next_refresh = Instant::now() + STATE_REFRESH_INTERVAL;
+
     loop {
         let now = Instant::now();
+
         if now >= next_refresh {
             let interval = refresh_ipc_state(
                 wm_name,
@@ -394,6 +415,7 @@ fn watch_events(wm_name: &str, socket: &Path, stream: &mut UnixStream, event_sta
 
             continue;
         }
+
         match read_event_until(stream, next_refresh - now) {
             Ok(Some((message_type, payload))) if message_type & 0x8000_0000 != 0 => {
                 let event_type = message_type & 0x7fff_ffff;
@@ -402,6 +424,7 @@ fn watch_events(wm_name: &str, socket: &Path, stream: &mut UnixStream, event_sta
                     event_type,
                     "received window manager event"
                 );
+
                 if event_type == 0 || event_type == 1 {
                     let interval = refresh_ipc_state(
                         wm_name,
@@ -413,6 +436,7 @@ fn watch_events(wm_name: &str, socket: &Path, stream: &mut UnixStream, event_sta
 
                     next_refresh = Instant::now() + interval;
                 }
+
                 handle_title_event(
                     wm_name,
                     event_type,
@@ -440,7 +464,7 @@ fn handle_title_event(
     match event_type {
         0 => match serde_json::from_slice::<IpcWorkspaceEvent>(payload) {
             Ok(event) if matches!(event.change.as_str(), "focus" | "empty") => {
-                request_title_update(wm_name, title, requests)
+                request_title_update(wm_name, title, requests);
             }
             Ok(_) => {}
             Err(error) => {
@@ -453,7 +477,7 @@ fn handle_title_event(
             Ok(event) => match event.change.as_str() {
                 "focus" => set_title_from_event(wm_name, title, event.container.name),
                 "title" if event.container.focused => {
-                    set_title_from_event(wm_name, title, event.container.name)
+                    set_title_from_event(wm_name, title, event.container.name);
                 }
                 "close" => request_title_update(wm_name, title, requests),
                 "move" if event.container.focused => request_title_update(wm_name, title, requests),
@@ -483,9 +507,10 @@ fn request_title_update(wm_name: &str, title: &RwLock<TitleState>, requests: &Sy
     match title.write() {
         Ok(mut target) => target.generation = target.generation.wrapping_add(1),
         Err(error) => {
-            tracing::error!("rubar: could not mark {wm_name} window title stale: {error}")
+            tracing::error!("rubar: could not mark {wm_name} window title stale: {error}");
         }
     }
+
     match requests.try_send(()) {
         Ok(()) | Err(TrySendError::Full(())) => {}
         Err(TrySendError::Disconnected(())) => {
@@ -496,21 +521,22 @@ fn request_title_update(wm_name: &str, title: &RwLock<TitleState>, requests: &Sy
 
 fn title_loop(
     wm_name: &str,
-    socket: PathBuf,
-    title: Arc<RwLock<TitleState>>,
-    requests: Receiver<()>,
+    socket: &Path,
+    title: &Arc<RwLock<TitleState>>,
+    requests: &Receiver<()>,
     retry_interval: Duration,
 ) {
     let mut failed_generation = None;
+
     loop {
         if let Some(failed) = failed_generation.take() {
             thread::sleep(retry_interval);
+
             match requests.try_recv() {
                 Ok(()) => {}
                 Err(TryRecvError::Empty) => match title.read() {
                     Ok(current) if current.generation != failed => continue,
                     Ok(_) => {}
-
                     Err(error) => {
                         tracing::error!(
                             "rubar: could not read {wm_name} window title state: {error}"
@@ -523,6 +549,7 @@ fn title_loop(
         } else if requests.recv().is_err() {
             break;
         }
+
         // One lookup observes the latest title for all pending events.
         while requests.try_recv().is_ok() {}
 
@@ -533,15 +560,15 @@ fn title_loop(
                 continue;
             }
         };
-        match read_window_title(&socket) {
+
+        match read_window_title(socket) {
             Ok(value) => match title.write() {
                 Ok(mut target) if target.generation == generation => target.value = value,
                 Ok(_) => {}
                 Err(error) => {
-                    tracing::error!("rubar: could not update {wm_name} window title: {error}")
+                    tracing::error!("rubar: could not update {wm_name} window title: {error}");
                 }
             },
-
             Err(error) => {
                 tracing::warn!("rubar: could not read {wm_name} focused window: {error}");
                 failed_generation = Some(generation);
@@ -580,6 +607,7 @@ fn read_event_until(
     stream
         .set_read_timeout(Some(timeout))
         .map_err(|error| format!("could not set i3 event read timeout: {error}"))?;
+
     // An idle timeout must not consume any part of the next IPC message.
     match SockRef::from(&*stream).peek(&mut [MaybeUninit::uninit()]) {
         Ok(0) => Err("i3 event stream closed".to_string()),
@@ -595,15 +623,15 @@ fn subscribe_to_events(socket: &Path) -> Result<UnixStream, String> {
     let mut stream = connect_ipc_socket(socket, Duration::from_secs(2))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
-        .map_err(|error| format!("could not set {socket:?} read timeout: {error}"))?;
+        .map_err(|error| format!("could not set {} read timeout: {error}", socket.display()))?;
     stream
         .set_write_timeout(Some(Duration::from_secs(2)))
-        .map_err(|error| format!("could not set {socket:?} write timeout: {error}"))?;
+        .map_err(|error| format!("could not set {} write timeout: {error}", socket.display()))?;
     ipc_write_message(&mut stream, 2, br#"["workspace","output","window"]"#)?;
     ipc_read_message(&mut stream)?;
     stream
         .set_read_timeout(None)
-        .map_err(|error| format!("could not clear {socket:?} read timeout: {error}"))?;
+        .map_err(|error| format!("could not clear {} read timeout: {error}", socket.display()))?;
     Ok(stream)
 }
 
@@ -652,9 +680,11 @@ fn ipc_write_message(
     message_type: u32,
     payload: &[u8],
 ) -> Result<(), String> {
+    let length = u32::try_from(payload.len())
+        .map_err(|error| format!("i3 IPC payload is too large: {error}"))?;
     stream
         .write_all(b"i3-ipc")
-        .and_then(|()| stream.write_all(&(payload.len() as u32).to_le_bytes()))
+        .and_then(|()| stream.write_all(&length.to_le_bytes()))
         .and_then(|()| stream.write_all(&message_type.to_le_bytes()))
         .and_then(|()| stream.write_all(payload))
         .map_err(|error| format!("could not write i3 IPC message: {error}"))
@@ -665,9 +695,11 @@ fn ipc_read_message(stream: &mut UnixStream) -> Result<(u32, Vec<u8>), String> {
     stream
         .read_exact(&mut header)
         .map_err(|error| format!("could not read i3 IPC header: {error}"))?;
+
     if &header[..6] != b"i3-ipc" {
         return Err("invalid i3 IPC header".to_string());
     }
+
     let length = u32::from_le_bytes(header[6..10].try_into().unwrap()) as usize;
     let message_type = u32::from_le_bytes(header[10..14].try_into().unwrap());
     let mut payload = vec![0; length];
@@ -687,6 +719,7 @@ fn focused_window_title(node: &serde_json::Value) -> Option<String> {
     let is_window = node.get("window").is_some_and(serde_json::Value::is_number)
         || node.get("shell").is_some_and(serde_json::Value::is_string)
         || node.get("app_id").is_some_and(serde_json::Value::is_string);
+
     if is_window && node.get("focused").and_then(serde_json::Value::as_bool) == Some(true) {
         return node
             .get("name")
@@ -709,12 +742,6 @@ fn focused_window_title(node: &serde_json::Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        IpcWorkspace, STATE_REFRESH_INTERVAL, TitleState, focused_window_title, handle_title_event,
-        ipc_read_message, ipc_request_with_timeout, ipc_write_message, read_event_until,
-        refresh_ipc_state, request_title_update, title_loop, workspace_snapshot,
-    };
-    use socket2::{Domain, SockAddr, Socket, Type};
     use std::{
         collections::HashMap,
         io::{self, Write},
@@ -722,6 +749,14 @@ mod tests {
         sync::{Arc, RwLock, mpsc::sync_channel},
         thread,
         time::{Duration, Instant},
+    };
+
+    use socket2::{Domain, SockAddr, Socket, Type};
+
+    use super::{
+        IpcWorkspace, STATE_REFRESH_INTERVAL, TitleState, focused_window_title, handle_title_event,
+        ipc_read_message, ipc_request_with_timeout, ipc_write_message, read_event_until,
+        refresh_ipc_state, request_title_update, title_loop, workspace_snapshot,
     };
 
     #[test]
@@ -735,9 +770,11 @@ mod tests {
 
         let mut pending = Vec::new();
         let mut queue_full = false;
+
         for _ in 0..16 {
             let client = Socket::new(Domain::UNIX, Type::STREAM, None).unwrap();
             client.set_nonblocking(true).unwrap();
+
             match client.connect(&address) {
                 Ok(()) => pending.push(client),
                 Err(error)
@@ -752,6 +789,7 @@ mod tests {
                 Err(error) => panic!("could not fill Unix socket accept queue: {error}"),
             }
         }
+
         assert!(queue_full, "Unix socket accept queue did not fill");
 
         let start = Instant::now();
@@ -809,11 +847,11 @@ mod tests {
         let worker = thread::spawn(move || {
             title_loop(
                 "i3",
-                title_socket,
-                worker_title,
-                events,
+                &title_socket,
+                &worker_title,
+                &events,
                 Duration::from_millis(30),
-            )
+            );
         });
         request_title_update("i3", &title, &requests);
 
@@ -922,6 +960,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("i3.sock");
         let listener = UnixListener::bind(&socket).unwrap();
+
         let server = thread::spawn(move || {
             let (mut first, _) = listener.accept().unwrap();
             assert_eq!(ipc_read_message(&mut first).unwrap().0, 4);
@@ -929,6 +968,7 @@ mod tests {
 
             listener.set_nonblocking(true).unwrap();
             let deadline = Instant::now() + Duration::from_secs(1);
+
             let mut second = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
@@ -941,6 +981,7 @@ mod tests {
                     Err(error) => panic!("title lookup was not retried: {error}"),
                 }
             };
+
             assert_eq!(ipc_read_message(&mut second).unwrap().0, 4);
 
             ipc_write_message(
@@ -957,11 +998,11 @@ mod tests {
         let worker = thread::spawn(move || {
             title_loop(
                 "i3",
-                socket,
-                worker_title,
-                events,
+                &socket,
+                &worker_title,
+                &events,
                 Duration::from_millis(30),
-            )
+            );
         });
         request_title_update("i3", &title, &requests);
         server.join().unwrap();

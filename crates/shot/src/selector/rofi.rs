@@ -17,6 +17,7 @@ pub(crate) fn select(names: &[String]) -> io::Result<Option<usize>> {
     stdin.write_all(choices.as_bytes())?;
 
     let output = child.wait_with_output()?;
+
     if !output.status.success() {
         return Ok(None);
     }

@@ -1,5 +1,3 @@
-use crate::frame::Frame;
-
 #[cfg(all(
     not(any(target_os = "windows", target_os = "macos")),
     feature = "wayland"
@@ -9,6 +7,8 @@ pub mod wayland;
 pub mod windows;
 #[cfg(all(not(any(target_os = "windows", target_os = "macos")), feature = "x11"))]
 pub mod x11;
+
+use crate::frame::Frame;
 
 #[derive(Clone, Copy)]
 pub enum BackendTarget {
@@ -61,6 +61,7 @@ pub(crate) fn stitch_positioned(frames: &[PositionedFrame]) -> crate::Result<Fra
         let expected_len = source_row_bytes
             .checked_mul(frame.height as usize)
             .ok_or(crate::Error::InvalidImageBuffer)?;
+
         if frame.data.len() != expected_len {
             return Err(crate::Error::InvalidImageBuffer);
         }
@@ -69,6 +70,7 @@ pub(crate) fn stitch_positioned(frames: &[PositionedFrame]) -> crate::Result<Fra
             .map_err(|_| crate::Error::InvalidImageBuffer)?;
         let destination_y = usize::try_from(i64::from(item.y) - min_y)
             .map_err(|_| crate::Error::InvalidImageBuffer)?;
+
         for row in 0..frame.height as usize {
             let source_start = row * source_row_bytes;
             let destination_start = (destination_y + row) * row_bytes + destination_x * 4;
@@ -88,10 +90,15 @@ pub trait Backend {
     fn initialize(target: BackendTarget) -> crate::Result<Self>
     where
         Self: Sized;
+
     fn capture_output(&mut self) -> crate::Result<Frame>;
+
     fn capture_all_outputs(&mut self) -> crate::Result<Frame>;
+
     fn monitor_count(&self) -> usize;
+
     fn monitor_names(&self) -> Vec<String>;
+
     fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()>;
 }
 

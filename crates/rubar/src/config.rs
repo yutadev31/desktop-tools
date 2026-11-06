@@ -2,9 +2,11 @@ use std::{error::Error, fs, path::PathBuf};
 
 use serde::Deserialize;
 
-use crate::color::parse_rgba;
-use crate::provider::{cpu, memory, process, tray};
-use crate::widget::WidgetKind;
+use crate::{
+    color::parse_rgba,
+    provider::{cpu, memory, process, tray},
+    widget::WidgetKind,
+};
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -251,12 +253,14 @@ impl Config {
             config.validate()?;
             return Ok(config);
         };
+
         if !path.exists() {
             tracing::debug!(path = %path.display(), "configuration file not found; using defaults");
             let config = Self::default();
             config.validate()?;
             return Ok(config);
         }
+
         tracing::debug!(path = %path.display(), "loading configuration");
         let config = Self::parse(&fs::read_to_string(&path)?)
             .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -279,9 +283,11 @@ impl Config {
         ] {
             names.retain(|name| {
                 let known = WidgetKind::parse(name).is_some();
+
                 if !known {
                     tracing::error!("widgets.{group}: unknown widget `{name}`; ignoring");
                 }
+
                 known
             });
         }
@@ -296,9 +302,11 @@ impl Config {
         ] {
             parse_rgba(value).map_err(|error| format!("{name}: {error}"))?;
         }
+
         if !(1..=4096).contains(&self.style.height) {
             return Err("style.height must be between 1 and 4096".to_string());
         }
+
         if !self.style.font_size.is_finite() || self.style.font_size <= 0.0 {
             return Err("style.font_size must be a finite positive number".to_string());
         }
@@ -306,29 +314,38 @@ impl Config {
         if self.tray.icon_size == 0 {
             return Err("tray.icon_size must be greater than zero".to_string());
         }
+
         tray::validate_name(&self.tray.provider)
             .map_err(|error| format!("tray.provider: {error}"))?;
+
         if self.battery.refresh_seconds == 0 {
             return Err("battery.refresh_seconds must be greater than zero".to_string());
         }
+
         if self.memory.refresh_seconds == 0 {
             return Err("memory.refresh_seconds must be greater than zero".to_string());
         }
+
         memory::validate_name(&self.memory.provider)
             .map_err(|error| format!("memory.provider: {error}"))?;
+
         if self.cpu.refresh_seconds == 0 {
             return Err("cpu.refresh_seconds must be greater than zero".to_string());
         }
 
         cpu::validate_name(&self.cpu.provider).map_err(|error| format!("cpu.provider: {error}"))?;
+
         if self.process.refresh_seconds == 0 {
             return Err("process.refresh_seconds must be greater than zero".to_string());
         }
+
         process::validate_name(&self.process.provider)
             .map_err(|error| format!("process.provider: {error}"))?;
+
         if self.volume.scroll_step == 0 || self.volume.scroll_step > 100 {
             return Err("volume.scroll_step must be between 1 and 100".to_string());
         }
+
         if let Some(max_width) = self.window.max_width
             && !(1..=i32::MAX as u32).contains(&max_width)
         {
@@ -357,6 +374,7 @@ impl Config {
                 "workspace.active_indicator_position must be `top` or `bottom`".to_string(),
             );
         }
+
         Ok(())
     }
 }
@@ -400,7 +418,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.widgets.left, ["clock", "battery"]);
-        assert!(config.widgets.center.is_empty());
+        assert_eq!(config.widgets.center, [] as [std::string::String; 0]);
         assert_eq!(config.widgets.right, ["tray", "clock"]);
         assert_eq!(config.style.widget_spacing, 18);
     }

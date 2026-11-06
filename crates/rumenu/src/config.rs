@@ -39,11 +39,13 @@ impl Default for Config {
 impl Config {
     pub fn load() -> Result<Self, Box<dyn Error>> {
         let path = config_path()?;
+
         let config = match fs::read_to_string(&path) {
             Ok(contents) => toml::from_str(&contents)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
             Err(error) => return Err(error.into()),
         };
+
         Ok(config)
     }
 
@@ -69,6 +71,7 @@ impl Config {
                 return Err(format!("invalid color: {color}").into());
             }
         }
+
         Ok(())
     }
 }
@@ -80,5 +83,6 @@ fn config_path() -> Result<PathBuf, Box<dyn Error>> {
             .ok_or("home directory is unavailable")?
             .join(".config"),
     };
+
     Ok(base.join("rumenu/config.toml"))
 }

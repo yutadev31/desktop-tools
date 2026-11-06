@@ -24,15 +24,18 @@ impl MemoryProvider for ProcMeminfo {
 fn parse_meminfo(contents: &str) -> Result<MemoryState, String> {
     let mut total = None;
     let mut available = None;
+
     for line in contents.lines() {
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
+
         let target = match key {
             "MemTotal" => &mut total,
             "MemAvailable" => &mut available,
             _ => continue,
         };
+
         let mut parts = value.split_whitespace();
 
         let number = parts
@@ -40,11 +43,14 @@ fn parse_meminfo(contents: &str) -> Result<MemoryState, String> {
             .ok_or_else(|| format!("{key} has no value"))?
             .parse::<u64>()
             .map_err(|error| format!("{key} has an invalid value: {error}"))?;
+
         if parts.next() != Some("kB") || parts.next().is_some() {
             return Err(format!("{key} must be measured in kB"));
         }
+
         *target = Some(number);
     }
+
     let total_kib = total.ok_or("MemTotal is missing")?;
     let available_kib = available.ok_or("MemAvailable is missing")?;
     let total_bytes = total_kib

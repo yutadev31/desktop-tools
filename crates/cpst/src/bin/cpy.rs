@@ -8,15 +8,18 @@ struct Cpy;
 fn main() {
     let mut arguments = std::env::args();
     arguments.next();
+
     if arguments.next().as_deref() == Some("__internal_daemonize") {
         if let Err(error) = run_daemon() {
-            println!("ERR {}", error.replace('\n', " "));
+            println!("ERR {}", error.to_string().replace('\n', " "));
             std::process::exit(1);
         }
+
         return;
     }
 
     Cpy::parse();
+
     if let Err(error) = copy() {
         eprintln!("cpy: {error}");
         std::process::exit(1);

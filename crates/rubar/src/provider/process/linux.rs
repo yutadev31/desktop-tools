@@ -23,6 +23,7 @@ impl ProcessProvider for ProcFs {
         let entries = fs::read_dir(&self.path)
             .map_err(|error| format!("could not read {}: {error}", self.path.display()))?;
         let mut count = 0;
+
         for entry in entries {
             let entry = entry
                 .map_err(|error| format!("could not enumerate {}: {error}", self.path.display()))?;
@@ -35,6 +36,7 @@ impl ProcessProvider for ProcFs {
                 count += 1;
             }
         }
+
         Ok(count)
     }
 }
@@ -44,13 +46,17 @@ fn check_proc_mount(mounts: &str, path: &std::path::Path) -> Result<(), String> 
         .to_str()
         .ok_or_else(|| format!("invalid procfs path: {}", path.display()))?;
     let mut found = false;
+
     for line in mounts.lines() {
         let mut fields = line.split_whitespace();
         let _source = fields.next();
+
         if fields.next() != Some(mount_point) {
             continue;
         }
+
         found = true;
+
         if fields.next() != Some("proc") {
             return Err(format!("{mount_point} is not mounted as procfs"));
         }
@@ -58,6 +64,7 @@ fn check_proc_mount(mounts: &str, path: &std::path::Path) -> Result<(), String> 
         let options = fields
             .next()
             .ok_or_else(|| format!("mount options are missing for {mount_point}"))?;
+
         for option in options.split(',') {
             if let Some(hidepid) = option.strip_prefix("hidepid=")
                 && !matches!(hidepid, "0" | "off" | "1" | "noaccess")
@@ -68,9 +75,11 @@ fn check_proc_mount(mounts: &str, path: &std::path::Path) -> Result<(), String> 
             }
         }
     }
+
     if !found {
         return Err(format!("could not find procfs mount for {mount_point}"));
     }
+
     Ok(())
 }
 

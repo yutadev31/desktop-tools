@@ -5,12 +5,12 @@
 //! [`backend`]. The crate intentionally has no widget, layout, or text
 //! rendering dependency.
 
-use std::{
-    error::Error,
-    ops::{BitOr, BitOrAssign},
-};
-
 pub mod backend;
+mod error;
+
+use std::ops::{BitOr, BitOrAssign};
+
+pub use crate::error::Error;
 
 /// An index identifying one entry returned by [`Shell::surface_configs`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -24,6 +24,8 @@ pub struct Size {
 }
 
 impl Size {
+    /// Creates a physical pixel size; zero dimensions request compositor sizing.
+    #[must_use]
     pub const fn new(width: u32, height: u32) -> Self {
         Self { width, height }
     }
@@ -37,6 +39,8 @@ pub struct Position {
 }
 
 impl Position {
+    /// Creates a position in physical pixels, including negative coordinates.
+    #[must_use]
     pub const fn new(x: i32, y: i32) -> Self {
         Self { x, y }
     }
@@ -69,7 +73,7 @@ pub enum OutputSelection {
     /// Let the compositor choose the output for one surface.
     #[default]
     Compositor,
-    /// Create one surface on the output with this wl_output name.
+    /// Create one surface on the output with this `wl_output` name.
     Named(String),
 }
 
@@ -79,18 +83,27 @@ pub struct Anchors(u8);
 
 impl Anchors {
     pub const TOP: Self = Self(1 << 0);
+
     pub const BOTTOM: Self = Self(1 << 1);
+
     pub const LEFT: Self = Self(1 << 2);
+
     pub const RIGHT: Self = Self(1 << 3);
 
+    /// Returns an anchor set with no edges selected.
+    #[must_use]
     pub const fn empty() -> Self {
         Self(0)
     }
 
+    /// Returns whether no edges are selected.
+    #[must_use]
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
 
+    /// Returns whether every edge in `other` is selected.
+    #[must_use]
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
@@ -131,6 +144,7 @@ pub struct SurfaceConfig {
 }
 
 impl SurfaceConfig {
+    /// Creates a top-layer surface with compositor-selected output and no anchors.
     pub fn new(namespace: impl Into<String>, size: Size) -> Self {
         Self {
             namespace: namespace.into(),
@@ -215,6 +229,8 @@ pub struct PositionF64 {
 }
 
 impl PositionF64 {
+    /// Creates a surface-local pointer position in physical pixels.
+    #[must_use]
     pub const fn new(x: f64, y: f64) -> Self {
         Self { x, y }
     }
@@ -225,15 +241,19 @@ pub trait Shell {
     /// Return the logical surfaces that should be created at startup.
     fn surface_configs(&self) -> &[SurfaceConfig];
 
-    /// Render one surface into 32-bit ARGB8888 bytes in native byte order.
+    /// Render one surface into exactly `size.width * size.height * 4` bytes
+    /// of 32-bit ARGB8888 pixels in native byte order.
     /// On the little-endian Linux systems supported by the current backends,
     /// this is B, G, R, A for each pixel.
+    ///
+    /// # Errors
+    /// Returns [`Error::Render`] with this surface and the application cause if rendering fails.
     fn render(
         &mut self,
         surface: SurfaceId,
         size: Size,
         output: Option<&str>,
-    ) -> Result<Vec<u8>, Box<dyn Error>>;
+    ) -> Result<Vec<u8>, Error>;
 
     /// Handle an input event belonging to one logical surface.
     fn handle_event(&mut self, surface: SurfaceId, event: InputEvent);
@@ -251,5 +271,11 @@ pub trait Shell {
 
 /// A window-system backend that owns native windows and its event loop.
 pub trait Backend {
-    fn run(&mut self, shell: &mut dyn Shell) -> Result<(), Box<dyn Error>>;
+    /// Runs until the shell or window system requests closure.
+    ///
+    /// # Errors
+    /// Returns [`Error::Backend`] with the backend name and original cause if setup,
+    /// event processing, or rendering fails. Rendering failures retain [`Error::Render`]
+    /// in the source chain.
+    fn run(&mut self, shell: &mut dyn Shell) -> Result<(), Error>;
 }

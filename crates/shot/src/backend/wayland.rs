@@ -31,11 +31,13 @@ impl Backend for WaylandBackend {
             BackendTarget::Monitor(index) => Some(index),
             BackendTarget::All => None,
         };
+
         Self::initialize_with_outputs(monitor_index)
     }
 
     fn capture_all_outputs(&mut self) -> crate::Result<Frame> {
         let mut frames = Vec::with_capacity(self.outputs.len());
+
         for output in self.outputs.clone() {
             let frame = self.capture_one(&output.proxy)?;
             let layout = self
@@ -50,6 +52,7 @@ impl Backend for WaylandBackend {
                 y: layout.y,
             });
         }
+
         stitch_positioned(&frames)
     }
 
@@ -78,6 +81,7 @@ impl Backend for WaylandBackend {
                 count: self.outputs.len(),
             });
         }
+
         self.selected_monitor = Some(monitor_index);
         Ok(())
     }
@@ -100,6 +104,7 @@ impl WaylandBackend {
                 .collect::<Vec<_>>()
         });
         let output_count = output_globals.len();
+
         if output_count == 0 {
             return Err(crate::Error::NoMonitors);
         }
@@ -112,6 +117,7 @@ impl WaylandBackend {
                 count: output_count,
             });
         }
+
         let selected_globals = output_globals.clone();
         let outputs = selected_globals
             .clone()
@@ -168,6 +174,7 @@ impl WaylandBackend {
         if let Some(format) = self.state.unsupported_format {
             return Err(crate::Error::UnsupportedWaylandPixelFormat(format));
         }
+
         if self.state.failed {
             return Err(crate::Error::WaylandScreencopyFailed);
         }
@@ -180,9 +187,11 @@ impl WaylandBackend {
 
         let row_size = info.width as usize * 4;
         let stride = info.stride as usize;
+
         if stride < row_size {
             return Err(crate::Error::InvalidImageBuffer);
         }
+
         let size = stride
             .checked_mul(info.height as usize)
             .ok_or(crate::Error::InvalidImageBuffer)?;
@@ -191,16 +200,16 @@ impl WaylandBackend {
         let file = tempfile::tempfile()?;
         file.set_len(size as u64)?;
 
-        // The file was resized to `size`, so mapping the complete file is valid.
+        // SAFETY: This private file has length `size` and is never truncated.
+        // The compositor writes through the shared buffer before sending Ready.
         let mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
-
         let pool = self.shm.create_pool(file.as_fd(), size_i32, &qh, ());
 
         let buffer = pool.create_buffer(
             0,
-            info.width as i32,
-            info.height as i32,
-            info.stride as i32,
+            i32::try_from(info.width).map_err(|_| crate::Error::InvalidImageBuffer)?,
+            i32::try_from(info.height).map_err(|_| crate::Error::InvalidImageBuffer)?,
+            i32::try_from(info.stride).map_err(|_| crate::Error::InvalidImageBuffer)?,
             info.format,
             &qh,
             (),
@@ -309,21 +318,17 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, ()> for State {
                     state.failed = true;
                 }
             }
-
             zwlr_screencopy_frame_v1::Event::Buffer { .. } => {
                 // Do not keep dispatching forever when the compositor advertises
                 // an enum value this client does not know.
                 state.failed = true;
             }
-
             zwlr_screencopy_frame_v1::Event::Ready { .. } => {
                 state.ready = true;
             }
-
             zwlr_screencopy_frame_v1::Event::Failed => {
                 state.failed = true;
             }
-
             _ => {}
         }
     }
@@ -388,6 +393,7 @@ fn convert_to_rgba(
             .ok_or(crate::Error::InvalidImageBuffer)?;
 
         let (pixels, _) = row.as_chunks::<4>();
+
         for pixel in pixels {
             let b = pixel[0];
             let g = pixel[1];

@@ -35,10 +35,13 @@ struct Counters {
 fn parse_stat(contents: &str) -> Result<Counters, String> {
     let line = contents.lines().next().ok_or("CPU line is missing")?;
     let mut parts = line.split_whitespace();
+
     if parts.next() != Some("cpu") {
         return Err("aggregate CPU line is missing".to_string());
     }
+
     let mut fields = [0; 8];
+
     for (index, field) in fields.iter_mut().enumerate() {
         match parts.next() {
             Some(value) => {
@@ -50,22 +53,27 @@ fn parse_stat(contents: &str) -> Result<Counters, String> {
             None => return Err(format!("CPU field {} is missing", index + 1)),
         }
     }
+
     Ok(Counters { fields })
 }
 
 fn usage(previous: Counters, current: Counters) -> Option<CpuState> {
     let mut total = 0u128;
+
     for (before, after) in previous.fields.into_iter().zip(current.fields) {
         total += u128::from(after.checked_sub(before)?);
     }
+
     if total == 0 {
         return None;
     }
+
     let idle = u128::from(current.fields[3] - previous.fields[3])
         + u128::from(current.fields[4] - previous.fields[4]);
     let busy = total - idle;
     Some(CpuState {
-        percent: ((busy * 100 + total / 2) / total) as u64,
+        percent: u64::try_from((busy * 100 + total / 2) / total)
+            .expect("percentage is at most 100"),
     })
 }
 

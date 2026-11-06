@@ -1,11 +1,10 @@
 use std::time::{Duration, Instant};
 
+use super::{Widget, WidgetContent};
 use crate::{
     config::MemoryConfig,
     provider::memory::{self, MemoryState},
 };
-
-use super::{Widget, WidgetContent};
 
 pub struct Memory {
     provider: Box<dyn memory::MemoryProvider>,
@@ -38,6 +37,7 @@ impl Widget for Memory {
         {
             return false;
         }
+
         let state = match self.provider.read() {
             Ok(state) => Some(state),
             Err(error) => {
@@ -47,9 +47,11 @@ impl Widget for Memory {
         };
 
         self.last_refresh = Some(Instant::now());
+
         if self.state == state {
             return false;
         }
+
         self.state = state;
         true
     }
@@ -58,7 +60,14 @@ impl Widget for Memory {
         let Some(state) = self.state else {
             return WidgetContent::Buttons(Vec::new());
         };
-        let gib = |bytes| format!("{:.1}", bytes as f64 / 1_073_741_824.0);
+        let gib = |bytes: u64| {
+            let high = u32::try_from(bytes >> 32).expect("upper half fits in u32");
+            let low = u32::try_from(bytes & u64::from(u32::MAX)).expect("lower half fits in u32");
+            format!(
+                "{:.1}",
+                f64::from(high) * 4.0 + f64::from(low) / 1_073_741_824.0
+            )
+        };
         WidgetContent::Text(
             self.format
                 .replace("{used}", &gib(state.used_bytes()))

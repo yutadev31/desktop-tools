@@ -51,33 +51,44 @@ impl Loader {
     }
 
     /// Load an absolute icon path or look up an icon name in the themes.
+    ///
+    /// Returns `None` for an empty name, zero target size, or if no readable,
+    /// supported icon can be decoded. Theme lookup tries inherited themes and fallbacks.
+    #[must_use]
     pub fn load(&self, name: &str, target: u32, raster_size: RasterSize) -> Option<Icon> {
         if target == 0 || name.is_empty() {
             return None;
         }
+
         let path = Path::new(name);
+
         if path.is_absolute() {
             return load_file(path, target, raster_size);
         }
+
         if path.components().count() != 1 {
             return None;
         }
+
         let name = name
             .strip_suffix(".png")
             .or_else(|| name.strip_suffix(".svg"))
             .unwrap_or(name);
 
         let mut visited = HashSet::new();
+
         for theme in &self.themes {
             if let Some(icon) = self.load_from_theme(theme, name, target, raster_size, &mut visited)
             {
                 return Some(icon);
             }
         }
+
         if let Some(icon) = self.load_from_theme("hicolor", name, target, raster_size, &mut visited)
         {
             return Some(icon);
         }
+
         for root in &self.roots {
             for file in candidate_files(root, name) {
                 if let Some(icon) = load_file(&file, target, raster_size) {
@@ -93,6 +104,7 @@ impl Loader {
                 }
             }
         }
+
         None
     }
 
@@ -107,16 +119,21 @@ impl Loader {
         if !visited.insert(theme.to_string()) {
             return None;
         }
+
         let mut parents = Vec::new();
+
         for root in &self.roots {
             let theme_dir = root.join(theme);
             let (mut directories, inherits) = theme_index(&theme_dir);
 
             parents.extend(inherits);
+
             if directories.is_empty() {
                 directories = conventional_directories(target);
             }
+
             directories.sort_by_key(|directory| directory_distance(directory, target));
+
             for directory in directories {
                 for file in candidate_files(&theme_dir.join(directory), name) {
                     if let Some(icon) = load_file(&file, target, raster_size) {
@@ -131,6 +148,7 @@ impl Loader {
                 return Some(icon);
             }
         }
+
         None
     }
 }
@@ -162,6 +180,7 @@ fn theme_index(theme_dir: &Path) -> (Vec<String>, Vec<String>) {
     let mut in_theme = false;
     let mut directories = Vec::new();
     let mut parents = Vec::new();
+
     for line in contents.lines() {
         let line = line.trim();
 
@@ -175,6 +194,7 @@ fn theme_index(theme_dir: &Path) -> (Vec<String>, Vec<String>) {
             }
         }
     }
+
     (directories, parents)
 }
 
@@ -188,6 +208,7 @@ fn parse_theme_list(value: &str) -> impl Iterator<Item = String> + '_ {
 
 fn conventional_directories(target: u32) -> Vec<String> {
     let mut directories = Vec::new();
+
     for size in [
         format!("{target}x{target}"),
         "16x16".into(),
@@ -200,6 +221,7 @@ fn conventional_directories(target: u32) -> Vec<String> {
             directories.push(format!("{size}/{context}"));
         }
     }
+
     directories
 }
 
@@ -207,6 +229,7 @@ fn directory_distance(directory: &str, target: u32) -> u32 {
     if directory.starts_with("scalable/") {
         return 1;
     }
+
     let Some((size, _)) = directory.split_once('x') else {
         return u32::MAX;
     };
@@ -222,10 +245,17 @@ fn candidate_files(dir: &Path, name: &str) -> [PathBuf; 2] {
 }
 
 /// Decode a PNG or SVG file into premultiplied RGBA pixels.
+///
+/// Returns `None` for zero target size, an unsupported extension, or unreadable
+/// or invalid image data. SVGs use the target size; PNGs follow `raster_size`.
+#[must_use]
+// SVG transforms use f32; rounding large pixel dimensions is inherent to resvg.
+#[allow(clippy::cast_precision_loss)]
 pub fn load_file(path: &Path, target: u32, raster_size: RasterSize) -> Option<Icon> {
     if target == 0 {
         return None;
     }
+
     match path.extension()?.to_str()? {
         "svg" => {
             let data = fs::read(path).ok()?;
@@ -248,6 +278,7 @@ pub fn load_file(path: &Path, target: u32, raster_size: RasterSize) -> Option<Ic
         }
         "png" => {
             let image = image::open(path).ok()?.into_rgba8();
+
             let image = match raster_size {
                 RasterSize::Original => image,
                 RasterSize::Target => {
@@ -257,12 +288,15 @@ pub fn load_file(path: &Path, target: u32, raster_size: RasterSize) -> Option<Ic
 
             let (width, height) = image.dimensions();
             let mut pixels = image.into_raw();
+
             for pixel in pixels.as_chunks_mut::<4>().0 {
                 let alpha = u16::from(pixel[3]);
+
                 for channel in &mut pixel[..3] {
-                    *channel = ((u16::from(*channel) * alpha) / 255) as u8;
+                    *channel = u8::try_from((u16::from(*channel) * alpha) / 255).ok()?;
                 }
             }
+
             Some(Icon {
                 width,
                 height,

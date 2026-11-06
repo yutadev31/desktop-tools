@@ -42,6 +42,8 @@ cargo run -p rubar
 
 ## Development Principles
 
+Follow [the shared Rust coding style](docs/coding-style.md) for every crate.
+
 - Do not make temporary workarounds that prioritize immediate behavior over a fundamental solution, or introduce fixes that are not root-cause fixes.
 - When improving compatibility would reduce readability, prioritize readability over compatibility.
 - Keep changes as small as necessary and do not combine them with unrelated refactoring. However, when the task itself is refactoring, changes do not need to be minimal; prefer broader refactoring where appropriate, as long as existing behavior is preserved.

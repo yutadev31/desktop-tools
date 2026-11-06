@@ -17,9 +17,8 @@ use zbus::{
     zvariant::{OwnedObjectPath, OwnedValue, Structure, Value},
 };
 
-use crate::{color::parse_rgba, config::StyleConfig, render::new_font_system};
-
 use super::sni::{ITEM_INTERFACE, SniItem};
+use crate::{color::parse_rgba, config::StyleConfig, render::new_font_system};
 
 const MENU_INTERFACE: &str = "com.canonical.dbusmenu";
 const ROW_HEIGHT: u32 = 30;
@@ -37,10 +36,10 @@ struct MenuEntry {
 }
 
 pub(super) fn open(
-    item: SniItem,
+    item: &SniItem,
     button_left: i32,
     surface_width: u32,
-    output: Option<String>,
+    output: Option<&String>,
     style: &StyleConfig,
 ) -> Result<(), Box<dyn Error>> {
     let connection = Connection::session()?;
@@ -56,7 +55,7 @@ pub(super) fn open(
         .ok()
         .map(|path| path.to_string());
     let Some(menu_path) = menu_path.filter(|path| path != "/" && path != "/NO_DBUSMENU") else {
-        item_proxy.call_method("ContextMenu", &(button_left, style.height as i32))?;
+        item_proxy.call_method("ContextMenu", &(button_left, i32::try_from(style.height)?))?;
         return Ok(());
     };
     let menu_proxy = Proxy::new(
@@ -71,7 +70,7 @@ pub(super) fn open(
         &menu_proxy,
         button_left,
         surface_width,
-        output.as_deref(),
+        output.map(String::as_str),
         style,
     );
     let closed = send_event(&menu_proxy, 0, "closed");
@@ -87,9 +86,11 @@ fn show_menu(
     style: &StyleConfig,
 ) -> Result<(), Box<dyn Error>> {
     let mut path = vec![0];
+
     loop {
         let parent = *path.last().expect("root menu exists");
         let mut rows = load_rows(proxy, parent)?;
+
         if path.len() > 1 {
             rows.insert(
                 0,
@@ -104,10 +105,13 @@ fn show_menu(
                 },
             );
         }
+
         if rows.is_empty() {
             return Ok(());
         }
+
         let mut popup = MenuPopup::new(rows, button_left, surface_width, output, style)?;
+
         let mut backend = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
             Box::new(shell_surface::backend::wayland::WaylandBackend) as Box<dyn Backend>
         } else {
@@ -119,6 +123,7 @@ fn show_menu(
             return Ok(());
         };
         let selected = &popup.rows[index];
+
         if selected.id == -1 {
             path.pop();
         } else if selected.submenu {
@@ -136,34 +141,41 @@ fn send_event(proxy: &Proxy<'_>, id: i32, kind: &str) -> Result<(), Box<dyn Erro
 }
 
 fn load_rows(proxy: &Proxy<'_>, parent: i32) -> Result<Vec<MenuEntry>, Box<dyn Error>> {
-    // TODO エラーをちゃんと処理する
-    let _: Result<bool, zbus::Error> = proxy.call("AboutToShow", &(parent,));
+    // Some menu implementations omit AboutToShow; still try their static layout.
+    if let Err(error) = proxy.call::<_, _, bool>("AboutToShow", &(parent,)) {
+        tracing::debug!(parent, "could not prepare tray menu: {error}");
+    }
+
     let (_revision, (_id, _properties, children)): MenuLayout =
         proxy.call("GetLayout", &(parent, 1_i32, Vec::<String>::new()))?;
     let mut rows = Vec::new();
+
     for child in children {
         let structure = Structure::try_from(child)?;
         let mut fields = structure.into_fields();
+
         if fields.len() != 3 {
             return Err("invalid DBusMenu item layout".into());
         }
+
         let id = i32::try_from(fields.remove(0))?;
         let properties = HashMap::<String, OwnedValue>::try_from(fields.remove(0))?;
 
         if !property_bool(&properties, "visible", true) {
             continue;
         }
+
         let separator = property_string(&properties, "type").as_deref() == Some("separator");
         let label = property_string(&properties, "label")
             .unwrap_or_default()
             .replace('_', "");
+
         let toggle = match property_string(&properties, "toggle-type").as_deref() {
             Some("radio") => Some(if property_i32(&properties, "toggle-state") == Some(1) {
                 "◉"
             } else {
                 "○"
             }),
-
             Some("checkmark") => Some(if property_i32(&properties, "toggle-state") == Some(1) {
                 "☑"
             } else {
@@ -172,6 +184,7 @@ fn load_rows(proxy: &Proxy<'_>, parent: i32) -> Result<Vec<MenuEntry>, Box<dyn E
             _ => None,
         }
         .map(str::to_string);
+
         rows.push(MenuEntry {
             id,
             label,
@@ -181,6 +194,7 @@ fn load_rows(proxy: &Proxy<'_>, parent: i32) -> Result<Vec<MenuEntry>, Box<dyn E
             toggle,
         });
     }
+
     Ok(rows)
 }
 
@@ -226,25 +240,29 @@ impl MenuPopup {
         output: Option<&str>,
         style: &StyleConfig,
     ) -> Result<Self, Box<dyn Error>> {
-        let height = ROW_HEIGHT * rows.len() as u32;
+        let height = ROW_HEIGHT * u32::try_from(rows.len())?;
         let mut surface = SurfaceConfig::new("rubar-tray-menu", Size::new(MENU_WIDTH, height));
-        let max_left = surface_width.saturating_sub(MENU_WIDTH) as i32;
+        let max_left = i32::try_from(surface_width.saturating_sub(MENU_WIDTH))?;
         let left = button_left.clamp(0, max_left);
+
         if std::env::var_os("WAYLAND_DISPLAY").is_some() {
             surface.anchors = Anchors::TOP | Anchors::RIGHT;
 
-            surface.position = Position::new(max_left - left, style.height as i32);
+            surface.position = Position::new(max_left - left, i32::try_from(style.height)?);
         } else {
             surface.anchors = Anchors::TOP | Anchors::LEFT;
-            surface.position = Position::new(left, style.height as i32);
+            surface.position = Position::new(left, i32::try_from(style.height)?);
         }
+
         surface.layer = Layer::Overlay;
         // The bar's exclusive zone already consumes its height. Ignore that
         // reservation so the top margin places this surface directly below it.
         surface.exclusive_zone = -1;
+
         if let Some(output) = output {
             surface.output = OutputSelection::Named(output.to_string());
         }
+
         surface.keyboard_interactivity = KeyboardInteractivity::OnDemand;
         surface.override_redirect = true;
 
@@ -266,10 +284,15 @@ impl MenuPopup {
     }
 
     fn row_at(&self, y: f64) -> Option<usize> {
-        let index = (y / ROW_HEIGHT as f64) as usize;
+        // The input API uses f64 pixels; hit testing truncates to a row index.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let index = (y / f64::from(ROW_HEIGHT)) as usize;
         (y >= 0.0 && index < self.rows.len()).then_some(index)
     }
 
+    // cosmic-text and tiny-skia use f32 coordinates and integer raster positions.
+
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
     fn draw_label(&mut self, pixmap: &mut Pixmap, text: &str, row: usize, color: [u8; 4]) {
         let mut buffer = Buffer::new(
             &mut self.font_system,
@@ -279,14 +302,18 @@ impl MenuPopup {
         buffer.set_wrap(Wrap::None);
         let text_color = TextColor::rgba(color[0], color[1], color[2], color[3]);
         let mut attrs = Attrs::new().color(text_color);
+
         if !self.font_family.is_empty() {
             attrs = attrs.family(cosmic_text::Family::Name(&self.font_family));
         }
+
         buffer.set_text(text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
-        let y = row as i32 * ROW_HEIGHT as i32
+        let y = i32::try_from(row).unwrap_or(i32::MAX)
+            * i32::try_from(ROW_HEIGHT).unwrap_or(i32::MAX)
             + ((ROW_HEIGHT as f32 - self.font_size * 1.3) / 2.0) as i32;
+
         buffer.draw(
             &mut self.font_system,
             &mut self.swash_cache,
@@ -294,16 +321,26 @@ impl MenuPopup {
             |glyph_x, glyph_y, _w, _h, color| {
                 let px = 12 + glyph_x;
                 let py = y + glyph_y;
-                if px < 0 || py < 0 || px >= pixmap.width() as i32 || py >= pixmap.height() as i32 {
+
+                if px < 0
+                    || py < 0
+                    || px >= i32::try_from(pixmap.width()).unwrap_or(i32::MAX)
+                    || py >= i32::try_from(pixmap.height()).unwrap_or(i32::MAX)
+                {
                     return;
                 }
-                let offset = (py as u32 * pixmap.width() + px as u32) as usize * 4;
+
+                let offset =
+                    (py.cast_unsigned() * pixmap.width() + px.cast_unsigned()) as usize * 4;
                 let [r, g, b, coverage] = color.as_rgba();
                 let data = pixmap.data_mut();
 
-                let inverse = 255 - coverage as u16;
+                let inverse = 255 - u16::from(coverage);
                 let blend = |src: u8, dst: u8| {
-                    ((src as u16 * coverage as u16 + dst as u16 * inverse) / 255) as u8
+                    u8::try_from(
+                        (u16::from(src) * u16::from(coverage) + u16::from(dst) * inverse) / 255,
+                    )
+                    .expect("blended channel is at most 255")
                 };
                 let destination = [data[offset], data[offset + 1], data[offset + 2]];
                 data[offset..offset + 4].copy_from_slice(&[
@@ -322,79 +359,93 @@ impl Shell for MenuPopup {
         &self.surfaces
     }
 
+    // cosmic-text and tiny-skia use f32 coordinates and integer raster positions.
+
+    #[allow(clippy::cast_precision_loss)]
     fn render(
         &mut self,
-        _surface: SurfaceId,
+        surface: SurfaceId,
         size: Size,
         _output: Option<&str>,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
-        let mut pixmap = Pixmap::new(size.width, size.height).ok_or("invalid menu size")?;
-        pixmap.fill(Color::from_rgba8(
-            self.background[0],
-            self.background[1],
-            self.background[2],
-            self.background[3],
-        ));
+    ) -> Result<Vec<u8>, shell_surface::Error> {
+        (|| -> Result<Vec<u8>, Box<dyn Error>> {
+            let mut pixmap = Pixmap::new(size.width, size.height).ok_or("invalid menu size")?;
+            pixmap.fill(Color::from_rgba8(
+                self.background[0],
+                self.background[1],
+                self.background[2],
+                self.background[3],
+            ));
 
-        for index in 0..self.rows.len() {
-            if self.hovered == Some(index)
-                && self.rows[index].enabled
-                && !self.rows[index].separator
-            {
-                let paint = tiny_skia::Paint {
-                    shader: tiny_skia::Shader::SolidColor(Color::from_rgba8(255, 255, 255, 28)),
-                    ..Default::default()
-                };
-                if let Some(rect) = tiny_skia::Rect::from_xywh(
-                    0.0,
-                    index as f32 * ROW_HEIGHT as f32,
-                    size.width as f32,
-                    ROW_HEIGHT as f32,
-                ) {
-                    pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
-                }
-            }
+            for index in 0..self.rows.len() {
+                if self.hovered == Some(index)
+                    && self.rows[index].enabled
+                    && !self.rows[index].separator
+                {
+                    let paint = tiny_skia::Paint {
+                        shader: tiny_skia::Shader::SolidColor(Color::from_rgba8(255, 255, 255, 28)),
+                        ..Default::default()
+                    };
 
-            if self.rows[index].separator {
-                let paint = tiny_skia::Paint {
-                    shader: tiny_skia::Shader::SolidColor(Color::from_rgba8(
-                        self.foreground[0],
-                        self.foreground[1],
-                        self.foreground[2],
-                        72,
-                    )),
-                    ..Default::default()
-                };
-                if let Some(rect) = tiny_skia::Rect::from_xywh(
-                    8.0,
-                    index as f32 * ROW_HEIGHT as f32 + ROW_HEIGHT as f32 / 2.0,
-                    size.width.saturating_sub(16) as f32,
-                    1.0,
-                ) {
-                    pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+                    if let Some(rect) = tiny_skia::Rect::from_xywh(
+                        0.0,
+                        index as f32 * ROW_HEIGHT as f32,
+                        size.width as f32,
+                        ROW_HEIGHT as f32,
+                    ) {
+                        pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+                    }
                 }
 
-                continue;
-            }
-            let mut label = self.rows[index].label.clone();
-            if let Some(toggle) = &self.rows[index].toggle {
-                label = format!("{toggle}  {label}");
-            }
-            if self.rows[index].submenu {
-                label.push_str("  ›");
-            }
-            let mut color = self.foreground;
-            if !self.rows[index].enabled {
-                color[3] /= 2;
-            }
-            self.draw_label(&mut pixmap, &label, index, color);
-        }
+                if self.rows[index].separator {
+                    let paint = tiny_skia::Paint {
+                        shader: tiny_skia::Shader::SolidColor(Color::from_rgba8(
+                            self.foreground[0],
+                            self.foreground[1],
+                            self.foreground[2],
+                            72,
+                        )),
+                        ..Default::default()
+                    };
 
-        let (pixels, _) = pixmap.data().as_chunks::<4>();
-        Ok(pixels
-            .iter()
-            .flat_map(|rgba| [rgba[2], rgba[1], rgba[0], rgba[3]])
-            .collect())
+                    if let Some(rect) = tiny_skia::Rect::from_xywh(
+                        8.0,
+                        index as f32 * ROW_HEIGHT as f32 + ROW_HEIGHT as f32 / 2.0,
+                        size.width.saturating_sub(16) as f32,
+                        1.0,
+                    ) {
+                        pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+                    }
+
+                    continue;
+                }
+
+                let mut label = self.rows[index].label.clone();
+
+                if let Some(toggle) = &self.rows[index].toggle {
+                    label = format!("{toggle}  {label}");
+                }
+
+                if self.rows[index].submenu {
+                    label.push_str("  ›");
+                }
+
+                let mut color = self.foreground;
+
+                if !self.rows[index].enabled {
+                    color[3] /= 2;
+                }
+
+                self.draw_label(&mut pixmap, &label, index, color);
+            }
+
+            let (pixels, _) = pixmap.data().as_chunks::<4>();
+            Ok(pixels
+                .iter()
+                .flat_map(|rgba| [rgba[2], rgba[1], rgba[0], rgba[3]])
+                .collect())
+        })()
+        .map_err(|source| shell_surface::Error::Render { surface, source })
     }
 
     fn handle_event(&mut self, _surface: SurfaceId, event: InputEvent) {
@@ -423,8 +474,9 @@ impl Shell for MenuPopup {
             InputEvent::PointerLeave => {
                 self.pointer_leave_deadline = Some(Instant::now() + POINTER_LEAVE_GRACE);
             }
-            InputEvent::FocusLost | InputEvent::CloseRequested => self.closed = true,
-            InputEvent::Key {
+            InputEvent::FocusLost
+            | InputEvent::CloseRequested
+            | InputEvent::Key {
                 keycode: 1 | 9,
                 pressed: true,
             } => self.closed = true,
@@ -435,6 +487,7 @@ impl Shell for MenuPopup {
     fn take_redraw_request(&mut self) -> bool {
         std::mem::take(&mut self.redraw)
     }
+
     fn should_close(&self) -> bool {
         self.closed
             || self
@@ -480,6 +533,7 @@ mod tests {
         }];
         let mut popup =
             MenuPopup::new(rows, 1200, 1920, Some("eDP-1"), &StyleConfig::default()).unwrap();
+
         let expected_x = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
             400
         } else {
@@ -540,7 +594,11 @@ mod tests {
         popup.handle_event(SurfaceId(0), InputEvent::PointerLeave);
         assert!(!popup.should_close());
 
-        popup.pointer_leave_deadline = Some(Instant::now() - Duration::from_millis(1));
+        popup.pointer_leave_deadline = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(1))
+                .unwrap(),
+        );
         assert!(popup.should_close());
 
         popup.pointer_leave_deadline = Some(Instant::now() + POINTER_LEAVE_GRACE);

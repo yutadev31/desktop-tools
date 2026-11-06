@@ -1,8 +1,7 @@
-use crate::config::WindowConfig;
+use std::sync::Arc;
 
 use super::{Widget, WidgetButton, WidgetContent};
-use crate::provider::wm::WmClient;
-use std::sync::Arc;
+use crate::{config::WindowConfig, provider::wm::WmClient};
 
 pub struct Window {
     format: String,
@@ -27,9 +26,11 @@ impl Window {
 impl Widget for Window {
     fn poll_changed(&mut self) -> bool {
         let title = self.client.title();
+
         if self.title == title {
             return false;
         }
+
         self.title = title;
         true
     }

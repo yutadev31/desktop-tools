@@ -49,6 +49,7 @@ fn read_sysctl<T: Copy>(name: &CStr) -> Result<T, String> {
             io::Error::last_os_error()
         ));
     }
+
     if size != size_of::<T>() {
         return Err(format!(
             "unexpected size for {}: {size} bytes, expected {}",
@@ -56,6 +57,7 @@ fn read_sysctl<T: Copy>(name: &CStr) -> Result<T, String> {
             size_of::<T>()
         ));
     }
+
     // SAFETY: sysctlbyname succeeded and filled exactly the size of T.
     Ok(unsafe { value.assume_init() })
 }

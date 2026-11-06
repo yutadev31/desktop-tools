@@ -16,9 +16,11 @@ impl MemoryState {
         if total_bytes == 0 {
             return Err("total memory must be greater than zero".to_string());
         }
+
         if available_bytes > total_bytes {
             return Err("available memory exceeds total memory".to_string());
         }
+
         Ok(Self {
             total_bytes,
             available_bytes,
@@ -38,8 +40,11 @@ impl MemoryState {
     }
 
     pub fn percent(self) -> u64 {
-        ((u128::from(self.used_bytes()) * 100 + u128::from(self.total_bytes) / 2)
-            / u128::from(self.total_bytes)) as u64
+        u64::try_from(
+            (u128::from(self.used_bytes()) * 100 + u128::from(self.total_bytes) / 2)
+                / u128::from(self.total_bytes),
+        )
+        .expect("percentage is at most 100")
     }
 }
 

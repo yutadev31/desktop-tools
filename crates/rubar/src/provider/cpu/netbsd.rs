@@ -21,7 +21,8 @@ fn usage(previous: [u64; 5], current: [u64; 5]) -> Option<CpuState> {
         std::array::from_fn::<_, 5, _>(|index| current[index].wrapping_sub(previous[index]));
     let total: u128 = deltas.into_iter().map(u128::from).sum();
     (total != 0).then(|| CpuState {
-        percent: (((total - u128::from(deltas[4])) * 100 + total / 2) / total) as u64,
+        percent: u64::try_from(((total - u128::from(deltas[4])) * 100 + total / 2) / total)
+            .expect("percentage is at most 100"),
     })
 }
 

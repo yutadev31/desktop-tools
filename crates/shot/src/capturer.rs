@@ -5,11 +5,11 @@ use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
-
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-use std::env;
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-use std::process::{Command, Stdio};
+use std::{
+    env,
+    process::{Command, Stdio},
+};
 
 use arboard::{Clipboard, ImageData};
 use image::{
@@ -37,14 +37,26 @@ pub struct Capturer {
 }
 
 impl Capturer {
+    /// Creates a capturer for the first monitor.
+    ///
+    /// # Errors
+    /// Returns an error if the display backend cannot connect or no monitor is available.
     pub fn new() -> crate::Result<Self> {
         Self::new_for_monitor(0)
     }
 
+    /// Creates a capturer for the zero-based monitor index.
+    ///
+    /// # Errors
+    /// Returns an error if backend initialization fails or the index is out of range.
     pub fn new_for_monitor(monitor_index: usize) -> crate::Result<Self> {
         Self::with_backend(BackendTarget::Monitor(monitor_index))
     }
 
+    /// Creates a capturer for an exact monitor name.
+    ///
+    /// # Errors
+    /// Returns an error if backend initialization fails or the named monitor is absent.
     pub fn new_for_monitor_name(name: &str) -> crate::Result<Self> {
         let mut capturer = Self::new_for_monitor_selection()?;
         let names = capturer.monitor_names();
@@ -59,30 +71,54 @@ impl Capturer {
         Ok(capturer)
     }
 
+    /// Creates a capturer with all monitors available for later selection.
+    ///
+    /// # Errors
+    /// Returns an error if the display backend cannot initialize or has no monitors.
     pub fn new_for_monitor_selection() -> crate::Result<Self> {
         Self::with_backend(BackendTarget::All)
     }
 
+    /// Returns the number of monitors advertised by the backend.
+    #[must_use]
     pub fn monitor_count(&self) -> usize {
         self.backend.monitor_count()
     }
 
+    /// Returns monitor names in the same order as their indices.
+    #[must_use]
     pub fn monitor_names(&self) -> Vec<String> {
         self.backend.monitor_names()
     }
 
+    /// Selects a monitor by its zero-based index.
+    ///
+    /// # Errors
+    /// Returns an error if the index is out of range.
     pub fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()> {
         self.backend.select_monitor(monitor_index)
     }
 
+    /// Creates a capturer that stitches all monitor images.
+    ///
+    /// # Errors
+    /// Returns an error if the display backend cannot initialize or has no monitors.
     pub fn new_for_all_monitors() -> crate::Result<Self> {
         Self::with_backend(BackendTarget::All)
     }
 
+    /// Captures the selected output, saves configured files, and optionally copies it.
+    ///
+    /// # Errors
+    /// Returns an error if capture, cropping, encoding, saving, or clipboard access fails.
     pub fn capture_output(&mut self) -> crate::Result<()> {
         self.capture(|backend| backend.capture_output())
     }
 
+    /// Captures all outputs as one image and sends it to configured destinations.
+    ///
+    /// # Errors
+    /// Returns an error if capture, stitching, cropping, encoding, saving, or clipboard access fails.
     pub fn capture_all_outputs(&mut self) -> crate::Result<()> {
         self.capture(|backend| backend.capture_all_outputs())
     }
@@ -97,23 +133,30 @@ impl Capturer {
         })
     }
 
+    /// Replaces explicit PNG destinations; an empty list uses the configured path format.
     pub fn set_output_files(&mut self, files: Vec<PathBuf>) {
         self.output_files = files;
     }
 
+    /// Sets the output path format; `None` disables generated file destinations.
     pub fn set_path_format(&mut self, path_format: Option<String>) {
         self.path_format = path_format;
     }
 
+    /// Enables or disables copying the captured image to the clipboard.
     pub fn set_clipboard(&mut self, clipboard: bool) {
         self.clipboard = clipboard;
     }
 
     /// Restrict the saved image to `(x, y, width, height)` pixels within the selected monitor.
+    ///
+    /// # Errors
+    /// Returns an error if width or height is zero. Bounds are checked during capture.
     pub fn set_region(&mut self, region: (u32, u32, u32, u32)) -> crate::Result<()> {
         if region.2 == 0 || region.3 == 0 {
             return Err(crate::Error::InvalidRegion);
         }
+
         self.region = Some(region);
         Ok(())
     }
@@ -179,21 +222,26 @@ impl Capturer {
         F: FnOnce(&mut dyn Backend) -> crate::Result<crate::frame::Frame>,
     {
         let mut frame = capture(self.backend.as_mut())?;
+
         if let Some((x, y, width, height)) = self.region {
-            frame = crop_frame(frame, x, y, width, height)?;
+            frame = crop_frame(&frame, x, y, width, height)?;
         }
+
         let png = encode_png(&frame)?;
 
         let paths = save_to_files(&png, &self.output_files, self.path_format.as_deref())?;
+
         for path in &paths {
             println!("Saved screenshot to {}", path.display());
         }
+
         if self.clipboard {
             if paths.is_empty() {
                 copy_png_to_clipboard(&png)?;
             } else if let Some(path) = paths.first() {
                 copy_to_clipboard(path)?;
             }
+
             println!("Copied screenshot to clipboard");
         }
 
@@ -202,7 +250,7 @@ impl Capturer {
 }
 
 fn crop_frame(
-    frame: crate::frame::Frame,
+    frame: &crate::frame::Frame,
     x: u32,
     y: u32,
     width: u32,
@@ -226,6 +274,7 @@ fn crop_frame(
     let capacity = output_stride
         .checked_mul(height as usize)
         .ok_or(crate::Error::InvalidImageBuffer)?;
+
     if frame.data.len()
         != source_stride
             .checked_mul(frame.height as usize)
@@ -235,10 +284,12 @@ fn crop_frame(
     }
 
     let mut data = Vec::with_capacity(capacity);
+
     for row in y..y + height {
         let start = row as usize * source_stride + x as usize * 4;
         data.extend_from_slice(&frame.data[start..start + output_stride]);
     }
+
     Ok(crate::frame::Frame {
         data,
         width,
@@ -271,8 +322,10 @@ fn save_to_files(
             {
                 fs::create_dir_all(parent)?;
             }
+
             fs::write(path, png)?;
         }
+
         return Ok(files.to_vec());
     }
 
@@ -289,11 +342,13 @@ fn save_to_files(
         })?
         .as_millis();
     let path = expand_path_format(path_format.unwrap_or_default(), timestamp)?;
+
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)?;
     }
+
     fs::write(&path, png)?;
 
     Ok(vec![path])
@@ -301,6 +356,7 @@ fn save_to_files(
 
 fn expand_path_format(path_format: &str, timestamp: u128) -> crate::Result<PathBuf> {
     let mut path = path_format.replace("${timestamp}", &timestamp.to_string());
+
     for (placeholder, directory, label) in [
         ("${pictures_dir}", dirs::picture_dir(), "Pictures"),
         ("${documents_dir}", dirs::document_dir(), "Documents"),
@@ -338,6 +394,7 @@ fn copy_png_to_clipboard(png: &[u8]) -> crate::Result<()> {
     fs::write(&path, png)?;
 
     let executable = env::current_exe()?;
+
     if let Err(error) = Command::new(executable)
         .arg("--clipboard-daemon-temp")
         .arg(&path)
@@ -379,7 +436,10 @@ fn copy_to_clipboard(path: &Path) -> crate::Result<()> {
     let png = fs::read(path)?;
     set_clipboard_image(&png)
 }
-
+/// Serves PNG pixels from the given file to the clipboard.
+///
+/// # Errors
+/// Returns an error if the file cannot be read or decoded, or clipboard access fails.
 pub fn serve_clipboard(path: &Path) -> crate::Result<()> {
     let png = fs::read(path)?;
     let image = image_data_from_png(&png)?;
@@ -388,20 +448,20 @@ pub fn serve_clipboard(path: &Path) -> crate::Result<()> {
     {
         use arboard::SetExtLinux;
 
-        let mut clipboard = Clipboard::new().map_err(|_| crate::Error::ClipboardFailed)?;
+        let mut clipboard = Clipboard::new().map_err(crate::Error::ClipboardFailed)?;
         clipboard
             .set()
             .wait()
             .image(image)
-            .map_err(|_| crate::Error::ClipboardFailed)?;
+            .map_err(crate::Error::ClipboardFailed)?;
     }
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         Clipboard::new()
-            .map_err(|_| crate::Error::ClipboardFailed)?
+            .map_err(crate::Error::ClipboardFailed)?
             .set_image(image)
-            .map_err(|_| crate::Error::ClipboardFailed)?;
+            .map_err(crate::Error::ClipboardFailed)?;
     }
 
     Ok(())
@@ -412,16 +472,16 @@ fn set_clipboard_image(png: &[u8]) -> crate::Result<()> {
     let image = image_data_from_png(png)?;
 
     Clipboard::new()
-        .map_err(|_| crate::Error::ClipboardFailed)?
+        .map_err(crate::Error::ClipboardFailed)?
         .set_image(image)
-        .map_err(|_| crate::Error::ClipboardFailed)?;
+        .map_err(crate::Error::ClipboardFailed)?;
 
     Ok(())
 }
 
 fn image_data_from_png(png: &[u8]) -> crate::Result<ImageData<'static>> {
     let image = image::load_from_memory(png)
-        .map_err(|_| crate::Error::ClipboardFailed)?
+        .map_err(crate::Error::Image)?
         .into_rgba8();
     let (width, height) = image.dimensions();
     Ok(ImageData {
@@ -429,4 +489,18 @@ fn image_data_from_png(png: &[u8]) -> crate::Result<ImageData<'static>> {
         height: height as usize,
         bytes: Cow::Owned(image.into_raw()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error as _;
+
+    use super::image_data_from_png;
+
+    #[test]
+    fn invalid_clipboard_image_retains_decoder_error() {
+        let error = image_data_from_png(b"invalid PNG").err().unwrap();
+        assert!(matches!(error, crate::Error::Image(_)));
+        assert!(error.source().unwrap().is::<image::ImageError>());
+    }
 }

@@ -25,11 +25,13 @@ pub fn run(close: Arc<AtomicBool>) -> Result<(), Box<dyn Error>> {
     let mut surface = SurfaceConfig::new("rumenu", Size::new(config.width, config.height));
     surface.layer = Layer::Overlay;
     surface.keyboard_interactivity = KeyboardInteractivity::Exclusive;
+
     if !wayland {
         let (connection, screen_number) = x11rb::connect(None)?;
         let screen = &connection.setup().roots[screen_number];
-        surface.position.x = (i32::from(screen.width_in_pixels) - config.width as i32) / 2;
-        surface.position.y = (i32::from(screen.height_in_pixels) - config.height as i32) / 2;
+        surface.position.x = (i32::from(screen.width_in_pixels) - i32::try_from(config.width)?) / 2;
+        surface.position.y =
+            (i32::from(screen.height_in_pixels) - i32::try_from(config.height)?) / 2;
         surface.override_redirect = true;
     }
 
@@ -53,7 +55,8 @@ pub fn run(close: Arc<AtomicBool>) -> Result<(), Box<dyn Error>> {
     } else {
         Box::new(shell_surface::backend::x11::X11Backend)
     };
-    backend.run(&mut app)
+
+    Ok(backend.run(&mut app)?)
 }
 
 struct App {
@@ -94,6 +97,7 @@ impl App {
         let Some(index) = self.filtered.get(self.selected).copied() else {
             return;
         };
+
         match catalog::launch(&self.entries[index], &self.config.terminal) {
             Ok(()) => self.close.store(true, Ordering::Release),
             Err(error) => {
@@ -107,6 +111,7 @@ impl App {
         if self.filtered.is_empty() {
             return;
         }
+
         if down {
             self.selected = if wrap && self.selected + 1 == self.filtered.len() {
                 0
@@ -124,9 +129,11 @@ impl App {
         if self.selected < self.scroll {
             self.scroll = self.selected;
         }
+
         if self.selected >= self.scroll + self.visible_rows() {
             self.scroll = self.selected + 1 - self.visible_rows();
         }
+
         self.redraw = true;
     }
 }
@@ -138,31 +145,34 @@ impl Shell for App {
 
     fn render(
         &mut self,
-        _surface: SurfaceId,
+        surface: SurfaceId,
         size: Size,
         _output: Option<&str>,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
-        let visible = self
-            .filtered
-            .iter()
-            .skip(self.scroll)
-            .take(self.visible_rows())
-            .map(|index| &self.entries[*index])
-            .collect::<Vec<_>>();
+    ) -> Result<Vec<u8>, shell_surface::Error> {
+        {
+            let visible = self
+                .filtered
+                .iter()
+                .skip(self.scroll)
+                .take(self.visible_rows())
+                .map(|index| &self.entries[*index])
+                .collect::<Vec<_>>();
 
-        self.renderer.render(
-            size,
-            &self.query,
-            &visible,
-            self.selected.saturating_sub(self.scroll),
-            self.error.as_deref(),
-        )
+            self.renderer.render(
+                size,
+                &self.query,
+                &visible,
+                self.selected.saturating_sub(self.scroll),
+                self.error.as_deref(),
+            )
+        }
+        .map_err(|source| shell_surface::Error::Render { surface, source })
     }
 
     fn handle_event(&mut self, _surface: SurfaceId, event: InputEvent) {
         match event {
             InputEvent::CloseRequested | InputEvent::FocusLost => {
-                self.close.store(true, Ordering::Release)
+                self.close.store(true, Ordering::Release);
             }
             InputEvent::KeyInput {
                 key: Key::Escape, ..
@@ -188,7 +198,6 @@ impl Shell for App {
                 self.error = None;
                 self.refilter();
             }
-
             InputEvent::PointerButton {
                 position,
                 button: MouseButton::Left,
@@ -196,8 +205,11 @@ impl Shell for App {
                 ..
             } => {
                 if position.y >= 66.0 {
+                    // Pointer coordinates arrive as f64; row indices truncate fractional pixels.
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                     let row = ((position.y - 66.0) / 44.0) as usize;
                     let selected = self.scroll + row;
+
                     if selected < self.filtered.len() && row < self.visible_rows() {
                         self.selected = selected;
                         self.launch_selected();
@@ -213,6 +225,7 @@ impl Shell for App {
         let icons_loaded = self.renderer.collect_icons();
         std::mem::take(&mut self.redraw) || icons_loaded
     }
+
     fn should_close(&self) -> bool {
         self.close.load(Ordering::Acquire)
     }

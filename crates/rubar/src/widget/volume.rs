@@ -1,9 +1,7 @@
 use std::{sync::mpsc, thread, time::Duration};
 
-use crate::config::VolumeConfig;
-use crate::provider::audio as provider;
-
 use super::{MouseButton, ScrollDirection, Widget, WidgetButton, WidgetContent};
+use crate::{config::VolumeConfig, provider::audio as provider};
 
 pub struct Volume {
     commands: mpsc::Sender<VolumeCommand>,
@@ -38,12 +36,14 @@ impl Volume {
         let (commands, command_receiver) = mpsc::channel();
         let (state_sender, updates) = mpsc::channel();
         let name = config.provider.clone();
+
         if let Err(error) = thread::Builder::new()
             .name("rubar-audio".to_string())
-            .spawn(move || run_audio_worker(&name, command_receiver, state_sender))
+            .spawn(move || run_audio_worker(&name, &command_receiver, &state_sender))
         {
             tracing::error!("rubar: could not start audio worker: {error}");
         }
+
         Self {
             commands,
             updates,
@@ -63,12 +63,14 @@ impl Volume {
 impl Widget for Volume {
     fn poll_changed(&mut self) -> bool {
         let mut changed = false;
+
         while let Ok(update) = self.updates.try_recv() {
             if update.revision >= self.revision && self.state != Some(update.state) {
                 self.state = Some(update.state);
                 changed = true;
             }
         }
+
         changed
     }
 
@@ -78,6 +80,7 @@ impl Widget for Volume {
             return WidgetContent::Buttons(Vec::new());
         };
         let mut buttons = Vec::new();
+
         if let Some(output) = state.output {
             self.visible_channels.push(false);
             buttons.push(volume_button(format_volume(
@@ -97,6 +100,7 @@ impl Widget for Volume {
                 input.muted,
             )));
         }
+
         WidgetContent::Buttons(buttons)
     }
 
@@ -104,12 +108,14 @@ impl Widget for Volume {
         if button != MouseButton::Left {
             return;
         }
+
         let Some(input) = self.visible_channels.get(item).copied() else {
             return;
         };
         let Some(mut state) = self.state else {
             return;
         };
+
         let Some(channel) = (if input {
             &mut state.input
         } else {
@@ -121,6 +127,7 @@ impl Widget for Volume {
 
         channel.muted = !channel.muted;
         let revision = self.revision.wrapping_add(1);
+
         if let Err(error) = self.commands.send(VolumeCommand {
             revision,
             action: VolumeAction::SetMuted {
@@ -142,6 +149,7 @@ impl Widget for Volume {
         let Some(mut state) = self.state else {
             return;
         };
+
         let Some(channel) = (if input {
             &mut state.input
         } else {
@@ -155,8 +163,11 @@ impl Widget for Volume {
             ScrollDirection::Up => i16::from(self.scroll_step),
             ScrollDirection::Down => -i16::from(self.scroll_step),
         };
-        channel.percent = (channel.percent as i16 + change).clamp(0, 100) as u8;
+
+        channel.percent = u8::try_from((i16::from(channel.percent) + change).clamp(0, 100))
+            .expect("volume is clamped to 100");
         let revision = self.revision.wrapping_add(1);
+
         if let Err(error) = self.commands.send(VolumeCommand {
             revision,
             action: VolumeAction::SetPercent {
@@ -174,8 +185,8 @@ impl Widget for Volume {
 
 fn run_audio_worker(
     name: &str,
-    commands: mpsc::Receiver<VolumeCommand>,
-    updates: mpsc::Sender<VolumeUpdate>,
+    commands: &mpsc::Receiver<VolumeCommand>,
+    updates: &mpsc::Sender<VolumeUpdate>,
 ) {
     let mut provider = match provider::create(name) {
         Ok(provider) => provider,
@@ -184,6 +195,7 @@ fn run_audio_worker(
             return;
         }
     };
+
     let mut last_state = None;
     let mut last_error: Option<String> = None;
     let mut processed_revision = 0;
@@ -192,8 +204,10 @@ fn run_audio_worker(
         match provider.read() {
             Ok(state) => {
                 last_error = None;
+
                 if last_state != Some(state) {
                     last_state = Some(state);
+
                     if updates
                         .send(VolumeUpdate {
                             revision: processed_revision,
@@ -205,7 +219,6 @@ fn run_audio_worker(
                     }
                 }
             }
-
             Err(error) => {
                 if last_error.as_deref() != Some(error.as_str()) {
                     tracing::warn!("rubar: could not read audio state: {error}");
@@ -213,15 +226,16 @@ fn run_audio_worker(
                 }
             }
         }
+
         match commands.recv_timeout(Duration::from_millis(100)) {
             Ok(command) => {
                 processed_revision = command.revision;
+
                 let result = match command.action {
                     VolumeAction::SetMuted {
                         input: false,
                         muted,
                     } => provider.set_muted(muted),
-
                     VolumeAction::SetMuted { input: true, muted } => provider.set_in_muted(muted),
                     VolumeAction::SetPercent {
                         input: false,
@@ -232,6 +246,7 @@ fn run_audio_worker(
                         percent,
                     } => provider.set_in_percent(percent),
                 };
+
                 if let Err(error) = result {
                     tracing::warn!("rubar: could not change audio state: {error}");
 
@@ -268,6 +283,7 @@ fn volume_button(text: String) -> WidgetButton {
 
 fn format_volume(format: &str, muted_format: &str, percent: u8, muted: bool) -> String {
     let format = if muted { muted_format } else { format };
+
     format
         .replace("{volume}", &percent.to_string())
         .replace("{muted}", if muted { " [M]" } else { "" })

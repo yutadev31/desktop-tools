@@ -41,6 +41,8 @@ The default Nix package is `rubar`. When building outside Nix on Linux, install 
 
 ## Development
 
+Follow the shared [Rust coding style](docs/coding-style.md).
+
 Run the workspace checks from the repository root:
 
 ```sh

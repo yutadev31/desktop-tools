@@ -36,12 +36,15 @@ fn read_sysfs(root: &Path) -> Result<BatteryState, String> {
     let entries = fs::read_dir(root)
         .map_err(|error| format!("could not read {}: {error}", root.display()))?;
     let mut aggregate = Aggregate::default();
+
     for entry in entries {
         let entry = entry.map_err(|error| format!("could not read power supply entry: {error}"))?;
         let path = entry.path();
+
         if read_value(&path, "type").as_deref() != Some("Battery") {
             continue;
         }
+
         let capacity = read_value(&path, "capacity")
             .and_then(|value| value.parse::<u8>().ok())
             .ok_or_else(|| format!("could not read battery capacity from {}", path.display()))?;
@@ -53,14 +56,17 @@ fn read_sysfs(root: &Path) -> Result<BatteryState, String> {
             Some("Discharging") => aggregate.discharging = true,
             _ => {}
         }
+
         let charge = read_first_number(&path, &["energy_now", "charge_now"]);
         let full = read_first_number(&path, &["energy_full", "charge_full"]);
+
         if let (Some(charge), Some(full)) = (charge, full) {
             aggregate.charge += charge;
             aggregate.full += full;
             aggregate.energy_batteries += 1;
         }
     }
+
     if aggregate.batteries == 0 {
         return Err("no battery found in /sys/class/power_supply".to_string());
     }
@@ -69,11 +75,19 @@ fn read_sysfs(root: &Path) -> Result<BatteryState, String> {
     // only provide `capacity` (for example, Logitech HID++ devices). Prefer
     // the energy/charge based batteries when available so those peripherals
     // do not dilute the laptop battery percentage.
+
     let percent = if aggregate.full > 0 && aggregate.energy_batteries > 0 {
-        ((aggregate.charge as f64 / aggregate.full as f64) * 100.0).round() as u8
+        u8::try_from(
+            ((u128::from(aggregate.charge) * 100 + u128::from(aggregate.full) / 2)
+                / u128::from(aggregate.full))
+            .min(100),
+        )
+        .expect("battery percentage is clamped to 100")
     } else {
-        (aggregate.percent_sum / aggregate.batteries) as u8
+        u8::try_from(aggregate.percent_sum / aggregate.batteries)
+            .expect("average of u8 capacities fits in u8")
     };
+
     let status = if aggregate.charging {
         BatteryStatus::Charging
     } else if aggregate.discharging {
@@ -104,8 +118,9 @@ fn read_first_number(path: &Path, names: &[&str]) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs;
+
+    use super::*;
 
     #[test]
     fn reads_and_aggregates_batteries() {
@@ -114,6 +129,7 @@ mod tests {
         let second = dir.path().join("BAT1");
         fs::create_dir_all(&first).unwrap();
         fs::create_dir_all(&second).unwrap();
+
         for (path, capacity, status, now, full) in [
             (&first, "50", "Discharging", "500", "1000"),
             (&second, "100", "Not charging", "1000", "1000"),
@@ -125,6 +141,7 @@ mod tests {
 
             fs::write(path.join("energy_full"), full).unwrap();
         }
+
         let peripheral = dir.path().join("hidpp_battery_0");
         fs::create_dir_all(&peripheral).unwrap();
         fs::write(peripheral.join("type"), "Battery").unwrap();

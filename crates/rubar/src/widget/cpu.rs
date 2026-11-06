@@ -1,11 +1,10 @@
 use std::time::{Duration, Instant};
 
+use super::{Widget, WidgetContent};
 use crate::{
     config::CpuConfig,
     provider::cpu::{self, CpuState},
 };
-
-use super::{Widget, WidgetContent};
 
 pub struct Cpu {
     provider: Box<dyn cpu::CpuProvider>,
@@ -38,6 +37,7 @@ impl Widget for Cpu {
         {
             return false;
         }
+
         let state = match self.provider.read() {
             Ok(Some(state)) => Some(state),
             Ok(None) => self.state,
@@ -48,9 +48,11 @@ impl Widget for Cpu {
         };
 
         self.last_refresh = Some(Instant::now());
+
         if self.state == state {
             return false;
         }
+
         self.state = state;
         true
     }

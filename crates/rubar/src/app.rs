@@ -1,11 +1,17 @@
-use std::sync::Arc;
 use std::{
     collections::HashMap,
     error::Error,
     fs,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
+
+use shell_surface::{
+    Anchors, Backend, InputEvent, MouseButton as SurfaceMouseButton, OutputSelection, Shell, Size,
+    SurfaceConfig, SurfaceId,
+};
+use x11rb::connection::Connection;
 
 use crate::{
     config::Config,
@@ -16,16 +22,11 @@ use crate::{
         process::Process, tray::Tray, volume::Volume, window::Window, workspace::Workspace,
     },
 };
-use shell_surface::{
-    Anchors, Backend, InputEvent, MouseButton as SurfaceMouseButton, OutputSelection, Shell, Size,
-    SurfaceConfig, SurfaceId,
-};
-use x11rb::connection::Connection;
 
 pub struct App {
     renderer: BarRenderer,
     widgets: WidgetGroups,
-    _ipc_client: Arc<dyn WmClient>,
+    ipc_client: Arc<dyn WmClient>,
     surfaces: Vec<SurfaceConfig>,
     revision: u64,
     announced_revision: u64,
@@ -62,7 +63,7 @@ impl App {
         Ok(Self {
             renderer: BarRenderer::new(&config.style)?,
             widgets,
-            _ipc_client: ipc_client,
+            ipc_client,
             surfaces: vec![panel_surface_config(&config.style, None)],
             revision: 0,
             announced_revision: 0,
@@ -96,18 +97,22 @@ impl App {
 
         loop {
             backend.run(self)?;
+
             if !self.restart_backend {
                 return Ok(());
             }
+
             self.restart_backend = false;
         }
     }
 
     fn poll_changes(&mut self) {
         self.poll_config();
+
         for (_, tray) in &mut self.dormant_trays {
             tray.poll_changed();
         }
+
         if self.widgets.poll_changed() {
             self.revision = self.revision.wrapping_add(1);
         }
@@ -117,10 +122,12 @@ impl App {
         if self.last_config_check.elapsed() < Duration::from_millis(250) {
             return;
         }
+
         self.last_config_check = Instant::now();
         let Some(path) = self.config_path.clone() else {
             return;
         };
+
         let contents = match fs::read_to_string(&path) {
             Ok(contents) => Some(contents),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -133,15 +140,18 @@ impl App {
         if contents == self.last_contents {
             return;
         }
-        self.last_contents = contents.clone();
+
+        self.last_contents.clone_from(&contents);
+
         let result = match contents {
             Some(contents) => Config::parse(&contents),
             None => Ok(Config::default()),
         };
+
         match result.and_then(|config| self.apply_config(&config)) {
             Ok(()) => tracing::info!(path = %path.display(), "configuration reloaded"),
             Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "configuration reload failed; keeping current settings")
+                tracing::warn!(path = %path.display(), %error, "configuration reload failed; keeping current settings");
             }
         }
     }
@@ -150,11 +160,13 @@ impl App {
         if &self.active_config == config {
             return Ok(());
         }
+
         let renderer = BarRenderer::new(&config.style)?;
+
         let ipc_client = if self.active_config.workspace.persistent_workspaces
             == config.workspace.persistent_workspaces
         {
-            Arc::clone(&self._ipc_client)
+            Arc::clone(&self.ipc_client)
         } else {
             wm::connect(&config.workspace.persistent_workspaces)
         };
@@ -215,7 +227,7 @@ impl App {
 
         self.restart_backend = self.surfaces[0].size.height != surfaces[0].size.height;
         self.renderer = renderer;
-        self._ipc_client = ipc_client;
+        self.ipc_client = ipc_client;
         self.widgets = widgets;
         let same_tray_provider = self.active_config.tray.provider == config.tray.provider;
         self.dormant_trays = available_names
@@ -230,7 +242,7 @@ impl App {
             .collect();
 
         self.surfaces = surfaces;
-        self.active_config = config.clone();
+        self.active_config.clone_from(config);
         self.frames.clear();
         self.revision = self.revision.wrapping_add(1);
         Ok(())
@@ -244,18 +256,21 @@ impl Shell for App {
 
     fn render(
         &mut self,
-        _surface: SurfaceId,
+        surface: SurfaceId,
         size: Size,
         output: Option<&str>,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
+    ) -> Result<Vec<u8>, shell_surface::Error> {
+        (|| -> Result<Vec<u8>, Box<dyn Error>> {
         self.poll_changes();
         let key = output.map(str::to_owned);
+
         if let Some(frame) = self.frames.get(&key)
             && frame.size == size
             && frame.revision == self.revision
         {
             return Ok(frame.pixels.clone());
         }
+
         tracing::trace!(width = size.width, height = size.height, output = ?output, "rendering bar");
 
         self.widgets.set_monitor_name(output);
@@ -266,7 +281,7 @@ impl Shell for App {
             &mut self.widgets.left,
             &mut self.widgets.center,
             &mut self.widgets.right,
-        );
+        )?;
         self.frames.insert(
             key,
             CachedFrame {
@@ -276,6 +291,7 @@ impl Shell for App {
             },
         );
         Ok(pixels)
+        })().map_err(|source| shell_surface::Error::Render { surface, source })
     }
 
     fn handle_event(&mut self, _surface: SurfaceId, event: InputEvent) {
@@ -298,7 +314,6 @@ impl Shell for App {
 
                 self.revision = self.revision.wrapping_add(1);
             }
-
             InputEvent::PointerScroll {
                 position,
                 delta_y,
@@ -306,6 +321,7 @@ impl Shell for App {
                 ..
             } if delta_y != 0.0 => {
                 self.widgets.set_monitor_name(output.as_deref());
+
                 let direction = if delta_y < 0.0 {
                     crate::widget::ScrollDirection::Up
                 } else {
@@ -347,7 +363,7 @@ fn panel_surface_config(
         Size::new(x11_width.unwrap_or(0), style.height.max(1)),
     );
     surface.anchors = Anchors::TOP | Anchors::LEFT | Anchors::RIGHT;
-    surface.exclusive_zone = style.height.max(1) as i32;
+    surface.exclusive_zone = i32::try_from(style.height.max(1)).unwrap_or(i32::MAX);
     surface.output = OutputSelection::All;
     surface
 }
@@ -399,6 +415,7 @@ fn plan_widgets(
 
                 return Ok(WidgetPlan::Reuse(index));
             }
+
             create_widget(name, config, ipc_client).map(WidgetPlan::New)
         })
         .collect()
@@ -446,6 +463,7 @@ fn create_widget(
     ipc_client: &Arc<dyn WmClient>,
 ) -> Result<Box<dyn crate::widget::Widget>, Box<dyn Error>> {
     let kind = WidgetKind::parse(name).ok_or_else(|| format!("unknown widget `{name}`"))?;
+
     match kind {
         WidgetKind::Clock => {
             Ok(Box::new(Clock::new(&config.clock)) as Box<dyn crate::widget::Widget>)
@@ -456,7 +474,6 @@ fn create_widget(
         WidgetKind::Memory => {
             Ok(Box::new(Memory::new(&config.memory)) as Box<dyn crate::widget::Widget>)
         }
-
         WidgetKind::Cpu => Ok(Box::new(Cpu::new(&config.cpu)) as Box<dyn crate::widget::Widget>),
         WidgetKind::Process => {
             Ok(Box::new(Process::new(&config.process)) as Box<dyn crate::widget::Widget>)
@@ -479,11 +496,12 @@ fn create_widget(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs;
 
+    use super::*;
+
     fn widget_ptr(widget: &dyn crate::widget::Widget) -> *const () {
-        widget as *const dyn crate::widget::Widget as *const ()
+        std::ptr::from_ref::<dyn crate::widget::Widget>(widget).cast::<()>()
     }
 
     #[test]
@@ -551,20 +569,20 @@ mod tests {
         app.last_contents = None;
 
         fs::write(&path, "[widgets]\nleft = ['clock']\n").unwrap();
-        app.last_config_check = Instant::now() - Duration::from_secs(1);
+        app.last_config_check = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         app.poll_config();
         assert_eq!(app.active_config.widgets.left, ["clock"]);
         assert_eq!(app.widgets.left.len(), 1);
         let revision = app.revision;
 
         fs::write(&path, "[style]\nheight = 0\n").unwrap();
-        app.last_config_check = Instant::now() - Duration::from_secs(1);
+        app.last_config_check = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         app.poll_config();
         assert_eq!(app.active_config.widgets.left, ["clock"]);
         assert_eq!(app.revision, revision);
 
         fs::remove_file(&path).unwrap();
-        app.last_config_check = Instant::now() - Duration::from_secs(1);
+        app.last_config_check = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         app.poll_config();
         assert_eq!(app.active_config, Config::default());
         assert!(app.widgets.left.is_empty());

@@ -1,9 +1,7 @@
 use std::time::{Duration, Instant};
 
-use crate::config::BatteryConfig;
-use crate::provider::battery as provider;
-
 use super::{Widget, WidgetContent};
+use crate::{config::BatteryConfig, provider::battery as provider};
 
 pub struct Battery {
     provider: Box<dyn provider::BatteryProvider>,
@@ -33,6 +31,7 @@ impl Widget for Battery {
         let should_refresh = self
             .last_refresh
             .is_none_or(|last| last.elapsed() >= self.refresh_interval);
+
         if should_refresh {
             let state = match self.provider.read() {
                 Ok(state) => Some(state),
@@ -41,6 +40,7 @@ impl Widget for Battery {
                     None
                 }
             };
+
             self.last_refresh = Some(Instant::now());
 
             if self.state != state {
@@ -48,6 +48,7 @@ impl Widget for Battery {
                 return true;
             }
         }
+
         false
     }
 
@@ -56,6 +57,7 @@ impl Widget for Battery {
             return WidgetContent::Buttons(Vec::new());
         };
         let charging = state.status.is_charging();
+
         WidgetContent::Text(
             self.format
                 .replace("{battery}", &state.percent.to_string())

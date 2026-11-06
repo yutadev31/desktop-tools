@@ -1,5 +1,3 @@
-use super::{WmClient, Workspace, WorkspaceState};
-use serde::Deserialize;
 use std::{
     collections::HashSet,
     io::{BufRead, BufReader, Read, Write},
@@ -10,6 +8,10 @@ use std::{
     thread,
     time::Duration,
 };
+
+use serde::Deserialize;
+
+use super::{WmClient, Workspace, WorkspaceState};
 
 #[derive(Debug, Deserialize)]
 struct ActiveWorkspace {
@@ -58,13 +60,13 @@ impl HyprlandClient {
         let shared_title = Arc::clone(&title);
         thread::spawn(move || {
             event_loop(
-                event_socket,
-                command_socket,
-                shared_state,
-                shared_title,
+                &event_socket,
+                &command_socket,
+                &shared_state,
+                &shared_title,
                 HashSet::new(),
                 reconnect_interval,
-            )
+            );
         });
 
         Ok(Self {
@@ -101,6 +103,7 @@ impl WmClient for HyprlandClient {
                 .map_err(|error| {
                     format!("could not focus monitor {monitor} for workspace switch: {error}")
                 })?;
+
             if !focus_response.starts_with("error") {
                 let split_response = send_command(
                     &socket,
@@ -121,6 +124,7 @@ impl WmClient for HyprlandClient {
         let legacy_command = format!("dispatch workspace {workspace_id}");
         let response = send_command(&socket, &legacy_command)
             .map_err(|error| format!("could not switch to workspace {workspace_id}: {error}"))?;
+
         if !response.starts_with("error") {
             return Ok(());
         }
@@ -130,11 +134,13 @@ impl WmClient for HyprlandClient {
         let lua_command = format!("dispatch hl.dsp.focus({{ workspace = \"{workspace_id}\" }})");
         let response = send_command(&socket, &lua_command)
             .map_err(|error| format!("could not switch to workspace {workspace_id}: {error}"))?;
+
         if response.starts_with("error") {
             return Err(format!(
                 "Hyprland rejected workspace {workspace_id}: {response}"
             ));
         }
+
         Ok(())
     }
 
@@ -175,28 +181,24 @@ fn hyprland_socket_dir() -> Result<PathBuf, String> {
 }
 
 fn event_loop(
-    event_socket: PathBuf,
-    command_socket: PathBuf,
-    state: Arc<RwLock<Option<WorkspaceState>>>,
-    title: Arc<RwLock<Option<String>>>,
+    event_socket: &Path,
+    command_socket: &Path,
+    state: &Arc<RwLock<Option<WorkspaceState>>>,
+    title: &Arc<RwLock<Option<String>>>,
     mut urgent_windows: HashSet<String>,
     reconnect_interval: Duration,
 ) {
     loop {
-        match UnixStream::connect(&event_socket) {
+        match UnixStream::connect(event_socket) {
             Ok(stream) => {
                 tracing::debug!(socket = %event_socket.display(), "connected to Hyprland event stream");
                 let reader = BufReader::new(stream);
 
                 for line in reader.lines() {
                     match line {
-                        Ok(event) => handle_event(
-                            &event,
-                            &command_socket,
-                            &state,
-                            &title,
-                            &mut urgent_windows,
-                        ),
+                        Ok(event) => {
+                            handle_event(&event, command_socket, state, title, &mut urgent_windows);
+                        }
                         Err(error) => {
                             tracing::warn!("rubar: Hyprland event socket read failed: {error}");
                             break;
@@ -204,11 +206,11 @@ fn event_loop(
                     }
                 }
             }
-
             Err(error) => {
                 tracing::warn!("rubar: could not connect to Hyprland event socket: {error}");
             }
         }
+
         thread::sleep(reconnect_interval);
     }
 }
@@ -225,6 +227,7 @@ fn handle_event(
         update_state(command_socket, state, urgent_windows);
     } else if is_urgent_event(event) {
         tracing::trace!(event, "received Hyprland urgency event");
+
         if let Some((_, address)) = event.split_once(">>") {
             urgent_windows.insert(window_address(address).to_string());
 
@@ -232,11 +235,13 @@ fn handle_event(
         }
     } else if is_window_event(event) {
         tracing::trace!(event, "received Hyprland window event");
+
         if let Some((name, address)) = event.split_once(">>")
             && matches!(name, "activewindowv2" | "closewindow")
         {
             urgent_windows.remove(window_address(address));
         }
+
         if matches!(
             event.split_once(">>").map(|(name, _)| name),
             Some("openwindow" | "closewindow" | "activewindowv2")
@@ -248,11 +253,11 @@ fn handle_event(
             Ok(value) => match title.write() {
                 Ok(mut target) => *target = value,
                 Err(error) => {
-                    tracing::error!("rubar: could not update Hyprland window title: {error}")
+                    tracing::error!("rubar: could not update Hyprland window title: {error}");
                 }
             },
             Err(error) => {
-                tracing::warn!("rubar: could not read Hyprland focused window: {error}")
+                tracing::warn!("rubar: could not read Hyprland focused window: {error}");
             }
         }
     } else {
@@ -304,7 +309,7 @@ fn update_state(
         Ok(new_state) => match state.write() {
             Ok(mut state) => *state = Some(new_state),
             Err(error) => {
-                tracing::error!("rubar: could not update Hyprland workspace state: {error}")
+                tracing::error!("rubar: could not update Hyprland workspace state: {error}");
             }
         },
         Err(error) => tracing::warn!("rubar: could not read Hyprland workspace state: {error}"),
@@ -319,9 +324,11 @@ fn read_state(
     workspaces.sort_by_key(|workspace| workspace.id);
     let clients = request_json::<Vec<HyprClient>>(socket_dir, "j/clients")?;
     let urgent_workspace_ids = urgent_workspace_ids(clients, urgent_windows);
+
     for workspace in &mut workspaces {
         workspace.urgent = urgent_workspace_ids.contains(&workspace.id);
     }
+
     let active = request_json::<ActiveWorkspace>(socket_dir, "j/activeworkspace")?;
     let monitors =
         request_json::<Vec<HyprMonitor>>(socket_dir, "j/monitors").unwrap_or_else(|error| {
@@ -381,9 +388,6 @@ fn read_window_title(dir: &Path) -> Result<Option<String>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        HyprClient, HyprClientWorkspace, handle_event, urgent_workspace_ids, window_address,
-    };
     use std::{
         collections::HashSet,
         io::{Read, Write},
@@ -393,13 +397,19 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    use super::{
+        HyprClient, HyprClientWorkspace, handle_event, urgent_workspace_ids, window_address,
+    };
+
     #[test]
     fn workspace_urgent_and_window_events_refresh_state_and_title() {
         let dir = tempfile::tempdir().unwrap();
         let listener = UnixListener::bind(dir.path().join(".socket.sock")).unwrap();
         listener.set_nonblocking(true).unwrap();
+
         let server = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(2);
+
             for _ in 0..9 {
                 let mut stream = loop {
                     match listener.accept() {
@@ -414,8 +424,10 @@ mod tests {
                         Err(error) => panic!("could not accept Hyprland request: {error}"),
                     }
                 };
+
                 let mut request = [0; 64];
                 let len = stream.read(&mut request).unwrap();
+
                 let response = match &request[..len] {
                     b"j/workspaces" => {
                         r#"[{"id":1,"name":"1","monitorID":0,"monitor":"DP-1"},{"id":2,"name":"2","monitorID":0,"monitor":"DP-1"}]"#
@@ -426,9 +438,11 @@ mod tests {
                     b"j/activewindow" => r#"{"title":"Editor"}"#,
                     other => panic!("unexpected Hyprland request: {other:?}"),
                 };
+
                 stream.write_all(response.as_bytes()).unwrap();
             }
         });
+
         let state = Arc::new(RwLock::new(None));
         let title = RwLock::new(None);
         let mut urgent = HashSet::new();

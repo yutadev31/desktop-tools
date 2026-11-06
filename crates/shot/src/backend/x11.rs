@@ -38,21 +38,24 @@ impl Backend for X11Backend {
             BackendTarget::Monitor(index) => Some(index),
             BackendTarget::All => None,
         };
+
         Self::initialize_with_monitors(monitor_index)
     }
 
     fn capture_all_outputs(&mut self) -> crate::Result<Frame> {
         let monitors = self.monitors.clone();
         let mut frames = Vec::with_capacity(monitors.len());
+
         for monitor in monitors {
             let x = i32::from(monitor.x);
             let y = i32::from(monitor.y);
             frames.push(PositionedFrame {
-                frame: self.capture_monitor(monitor)?,
+                frame: self.capture_monitor(&monitor)?,
                 x,
                 y,
             });
         }
+
         stitch_positioned(&frames)
     }
 
@@ -63,7 +66,7 @@ impl Backend for X11Backend {
             .get(index)
             .cloned()
             .ok_or(crate::Error::NoMonitors)?;
-        self.capture_monitor(monitor)
+        self.capture_monitor(&monitor)
     }
 
     fn monitor_count(&self) -> usize {
@@ -84,6 +87,7 @@ impl Backend for X11Backend {
                 count: self.monitors.len(),
             });
         }
+
         self.selected_monitor = Some(monitor_index);
         Ok(())
     }
@@ -92,7 +96,7 @@ impl Backend for X11Backend {
 impl X11Backend {
     fn initialize_with_monitors(monitor_index: Option<usize>) -> crate::Result<Self> {
         let (connection, screen_num) =
-            x11rb::connect(None).map_err(|error| crate::Error::X11Connect(error.to_string()))?;
+            x11rb::connect(None).map_err(|error| crate::Error::X11Connect(Box::new(error)))?;
         let setup = connection.setup();
         let screen = setup
             .roots
@@ -109,38 +113,43 @@ impl X11Backend {
             .randr_get_monitors(screen.root, true)
             .ok()
             .and_then(|cookie| cookie.reply().ok())
-            .map(|reply| {
-                reply
-                    .monitors
-                    .into_iter()
-                    .map(|monitor| {
-                        let name = connection
-                            .get_atom_name(monitor.name)
-                            .ok()
-                            .and_then(|cookie| cookie.reply().ok())
-                            .map(|reply| String::from_utf8_lossy(&reply.name).into_owned())
-                            .unwrap_or_else(|| format!("x11-monitor-{}", monitor.name));
+            .map_or_else(
+                || {
+                    vec![Monitor {
+                        name: "x11-monitor-0".to_string(),
 
-                        Monitor {
-                            name,
-                            x: monitor.x,
-                            y: monitor.y,
-                            width: monitor.width,
-                            height: monitor.height,
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|| {
-                vec![Monitor {
-                    name: "x11-monitor-0".to_string(),
+                        x: 0,
+                        y: 0,
+                        width: screen.width_in_pixels,
+                        height: screen.height_in_pixels,
+                    }]
+                },
+                |reply| {
+                    reply
+                        .monitors
+                        .into_iter()
+                        .map(|monitor| {
+                            let name = connection
+                                .get_atom_name(monitor.name)
+                                .ok()
+                                .and_then(|cookie| cookie.reply().ok())
+                                .map_or_else(
+                                    || format!("x11-monitor-{}", monitor.name),
+                                    |reply| String::from_utf8_lossy(&reply.name).into_owned(),
+                                );
 
-                    x: 0,
-                    y: 0,
-                    width: screen.width_in_pixels,
-                    height: screen.height_in_pixels,
-                }]
-            });
+                            Monitor {
+                                name,
+                                x: monitor.x,
+                                y: monitor.y,
+                                width: monitor.width,
+                                height: monitor.height,
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                },
+            );
+
         if let Some(index) = monitor_index
             && index >= monitors.len()
         {
@@ -149,6 +158,7 @@ impl X11Backend {
                 count: monitors.len(),
             });
         }
+
         let root = screen.root;
         let red_mask = visual.red_mask;
         let green_mask = visual.green_mask;
@@ -165,7 +175,7 @@ impl X11Backend {
         })
     }
 
-    fn capture_monitor(&mut self, monitor: Monitor) -> crate::Result<Frame> {
+    fn capture_monitor(&mut self, monitor: &Monitor) -> crate::Result<Frame> {
         let reply = self
             .connection
             .get_image(
@@ -177,9 +187,9 @@ impl X11Backend {
                 monitor.height,
                 u32::MAX,
             )
-            .map_err(|error| crate::Error::X11Image(error.to_string()))?
+            .map_err(|error| crate::Error::X11Image(Box::new(error)))?
             .reply()
-            .map_err(|error| crate::Error::X11Image(error.to_string()))?;
+            .map_err(|error| crate::Error::X11Image(Box::new(error)))?;
 
         let image = Image::get_from_reply(
             self.connection.setup(),
@@ -187,10 +197,11 @@ impl X11Backend {
             monitor.height,
             reply,
         )
-        .map_err(|error| crate::Error::X11Image(error.to_string()))?;
+        .map_err(|error| crate::Error::X11Image(Box::new(error)))?;
 
         let capacity = monitor.width as usize * monitor.height as usize * 4;
         let mut data = Vec::with_capacity(capacity);
+
         for y in 0..monitor.height {
             for x in 0..monitor.width {
                 let pixel = image.get_pixel(x, y);
@@ -202,10 +213,11 @@ impl X11Backend {
                 ]);
             }
         }
+
         Ok(Frame {
             data,
-            width: monitor.width as u32,
-            height: monitor.height as u32,
+            width: u32::from(monitor.width),
+            height: u32::from(monitor.height),
         })
     }
 }
@@ -214,8 +226,9 @@ fn channel(pixel: u32, mask: u32) -> u8 {
     if mask == 0 {
         return 0;
     }
+
     let shift = mask.trailing_zeros();
     let value = (pixel & mask) >> shift;
     let max = mask >> shift;
-    ((value * 255 + max / 2) / max) as u8
+    u8::try_from((value * 255 + max / 2) / max).expect("normalized channel is at most 255")
 }

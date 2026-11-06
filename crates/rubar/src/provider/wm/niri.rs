@@ -1,15 +1,17 @@
-use super::{WmClient, Workspace, WorkspaceState};
-use serde::Deserialize;
-use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Write},
     os::unix::net::UnixStream,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
     thread,
     time::Duration,
 };
+
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use super::{WmClient, Workspace, WorkspaceState};
 
 pub(crate) struct NiriClient {
     socket: PathBuf,
@@ -50,9 +52,11 @@ impl NiriClient {
         let socket = std::env::var_os("NIRI_SOCKET")
             .map(PathBuf::from)
             .ok_or_else(|| "NIRI_SOCKET is not set".to_string())?;
+
         if !socket.exists() {
             return Err(format!("niri socket does not exist: {}", socket.display()));
         }
+
         tracing::debug!(socket = %socket.display(), "connecting to niri event stream");
 
         let state = Arc::new(RwLock::new(None));
@@ -61,7 +65,12 @@ impl NiriClient {
         let shared_state = Arc::clone(&state);
         let shared_title = Arc::clone(&title);
         thread::spawn(move || {
-            event_loop(event_socket, shared_state, shared_title, reconnect_interval)
+            event_loop(
+                &event_socket,
+                &shared_state,
+                &shared_title,
+                reconnect_interval,
+            );
         });
 
         Ok(Self {
@@ -93,9 +102,11 @@ impl WmClient for NiriClient {
             .map_err(|_| format!("invalid niri workspace id {workspace_id}"))?;
         let request = json!({"Action": {"FocusWorkspace": {"reference": {"Id": id}}}});
         let response = request_once(&self.socket, &request)?;
+
         if let Some(error) = response.get("Err") {
             return Err(format!("niri rejected workspace switch: {error}"));
         }
+
         Ok(())
     }
 
@@ -111,22 +122,23 @@ impl WmClient for NiriClient {
 }
 
 fn event_loop(
-    socket: PathBuf,
-    state: Arc<RwLock<Option<WorkspaceState>>>,
-    title: Arc<RwLock<Option<String>>>,
+    socket: &Path,
+    state: &Arc<RwLock<Option<WorkspaceState>>>,
+    title: &Arc<RwLock<Option<String>>>,
     reconnect_interval: Duration,
 ) {
     loop {
-        match stream_events(&socket, &state, &title) {
+        match stream_events(socket, state, title) {
             Ok(()) => tracing::warn!("rubar: niri event stream closed; reconnecting"),
             Err(error) => tracing::warn!("rubar: niri event stream failed: {error}"),
         }
+
         thread::sleep(reconnect_interval);
     }
 }
 
 fn stream_events(
-    socket: &PathBuf,
+    socket: &Path,
     state: &RwLock<Option<WorkspaceState>>,
     title: &RwLock<Option<String>>,
 ) -> Result<(), String> {
@@ -142,14 +154,17 @@ fn stream_events(
     let mut line = String::new();
     let mut workspace_state = None;
     let mut window_state = WindowState::default();
+
     loop {
         line.clear();
         let bytes = reader
             .read_line(&mut line)
             .map_err(|error| error.to_string())?;
+
         if bytes == 0 {
             return Ok(());
         }
+
         let value: Value = serde_json::from_str(&line)
             .map_err(|error| format!("could not parse niri event: {error}"))?;
         tracing::trace!(event = ?value, "received niri event");
@@ -157,11 +172,12 @@ fn stream_events(
         if value.get("Ok").is_some() {
             continue;
         }
+
         match update_workspaces(&value, &mut workspace_state) {
             Ok(true) => match state.write() {
-                Ok(mut current) => *current = workspace_state.clone(),
+                Ok(mut current) => current.clone_from(&workspace_state),
                 Err(error) => {
-                    tracing::error!("rubar: could not update niri workspace state: {error}")
+                    tracing::error!("rubar: could not update niri workspace state: {error}");
                 }
             },
             Ok(false) => {}
@@ -169,11 +185,11 @@ fn stream_events(
         }
 
         match update_title(&value, &mut window_state) {
-            Ok(Some(next)) => match title.write() {
+            Ok(TitleUpdate::Changed(next)) => match title.write() {
                 Ok(mut current) => *current = next,
                 Err(error) => tracing::error!("rubar: could not update niri window title: {error}"),
             },
-            Ok(None) => {}
+            Ok(TitleUpdate::Unchanged) => {}
             Err(error) => tracing::warn!("rubar: could not update niri window title: {error}"),
         }
     }
@@ -184,9 +200,11 @@ fn update_workspaces(value: &Value, state: &mut Option<WorkspaceState>) -> Resul
         *state = Some(parse_workspaces(event)?);
         return Ok(true);
     }
+
     let Some(current) = state.as_mut() else {
         return Ok(false);
     };
+
     if let Some(event) = value.get("WorkspaceActivated") {
         let id = event_id(event, "WorkspaceActivated")?;
         let focused = event
@@ -200,12 +218,15 @@ fn update_workspaces(value: &Value, state: &mut Option<WorkspaceState>) -> Resul
             .find(|workspace| workspace.id == id)
             .ok_or_else(|| format!("WorkspaceActivated references unknown workspace {id}"))?;
         current.active_ids.insert(workspace.monitor.clone(), id);
+
         if focused {
             current.active_id = id;
             current.active_monitor_id = workspace.monitor_id;
         }
+
         return Ok(true);
     }
+
     if let Some(event) = value.get("WorkspaceUrgencyChanged") {
         let id = event_id(event, "WorkspaceUrgencyChanged")?;
 
@@ -221,6 +242,7 @@ fn update_workspaces(value: &Value, state: &mut Option<WorkspaceState>) -> Resul
         workspace.urgent = urgent;
         return Ok(true);
     }
+
     Ok(false)
 }
 
@@ -251,16 +273,20 @@ fn parse_workspaces(event: &Value) -> Result<WorkspaceState, String> {
     let mut active_monitor_id = 0;
     let mut active_ids = HashMap::new();
     let mut workspaces = Vec::with_capacity(raw.len());
+
     for workspace in raw {
         let id = i64::try_from(workspace.id)
             .map_err(|_| format!("workspace id {} exceeds supported range", workspace.id))?;
         let name = workspace.name.unwrap_or_else(|| workspace.idx.to_string());
         let monitor = workspace.output.unwrap_or_default();
-        let monitor_id = outputs.binary_search(&monitor).unwrap_or(0) as i64;
+        let monitor_id = i64::try_from(outputs.binary_search(&monitor).unwrap_or(0))
+            .expect("allocated output count fits in i64");
+
         if workspace.is_focused {
             active_id = id;
             active_monitor_id = monitor_id;
         }
+
         if workspace.is_active {
             active_ids.insert(monitor.clone(), id);
         }
@@ -274,6 +300,7 @@ fn parse_workspaces(event: &Value) -> Result<WorkspaceState, String> {
             active: false,
         });
     }
+
     workspaces.sort_by(|a, b| {
         a.monitor.cmp(&b.monitor).then_with(|| {
             a.name
@@ -291,7 +318,13 @@ fn parse_workspaces(event: &Value) -> Result<WorkspaceState, String> {
     })
 }
 
-fn update_title(event: &Value, state: &mut WindowState) -> Result<Option<Option<String>>, String> {
+#[derive(Debug, PartialEq, Eq)]
+enum TitleUpdate {
+    Unchanged,
+    Changed(Option<String>),
+}
+
+fn update_title(event: &Value, state: &mut WindowState) -> Result<TitleUpdate, String> {
     if let Some(windows) = event.get("WindowsChanged") {
         let windows: Vec<NiriWindow> = serde_json::from_value(
             windows
@@ -317,6 +350,7 @@ fn update_title(event: &Value, state: &mut WindowState) -> Result<Option<Option<
                 .ok_or("WindowOpenedOrChanged has no window")?,
         )
         .map_err(|error| format!("invalid WindowOpenedOrChanged event: {error}"))?;
+
         if window.is_focused {
             state.focused_id = Some(window.id);
         }
@@ -339,16 +373,17 @@ fn update_title(event: &Value, state: &mut WindowState) -> Result<Option<Option<
             state.focused_id = None;
         }
     } else {
-        return Ok(None);
+        return Ok(TitleUpdate::Unchanged);
     }
-    Ok(Some(
+
+    Ok(TitleUpdate::Changed(
         state
             .focused_id
             .and_then(|id| state.windows.get(&id).cloned().flatten()),
     ))
 }
 
-fn request_once(socket: &PathBuf, request: &Value) -> Result<Value, String> {
+fn request_once(socket: &Path, request: &Value) -> Result<Value, String> {
     let mut stream = UnixStream::connect(socket)
         .map_err(|error| format!("could not connect to niri socket: {error}"))?;
     serde_json::to_writer(&mut stream, request).map_err(|error| error.to_string())?;
@@ -363,8 +398,9 @@ fn request_once(socket: &PathBuf, request: &Value) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{WindowState, parse_workspaces, update_title, update_workspaces};
     use serde_json::json;
+
+    use super::{TitleUpdate, WindowState, parse_workspaces, update_title, update_workspaces};
 
     #[test]
     fn workspace_events_map_outputs_and_active_state() {
@@ -435,25 +471,25 @@ mod tests {
                 &mut state
             )
             .unwrap(),
-            Some(Some("Terminal".to_string()))
+            TitleUpdate::Changed(Some("Terminal".to_string()))
         );
 
         assert_eq!(
             update_title(&json!({"WindowFocusChanged": {"id": 2}}), &mut state).unwrap(),
-            Some(Some("Browser".to_string()))
+            TitleUpdate::Changed(Some("Browser".to_string()))
         );
-        assert_eq!(update_title(&json!({"WindowOpenedOrChanged": {"window": {"id": 2, "title": "New page", "is_focused": true}}}), &mut state).unwrap(), Some(Some("New page".to_string())));
+        assert_eq!(update_title(&json!({"WindowOpenedOrChanged": {"window": {"id": 2, "title": "New page", "is_focused": true}}}), &mut state).unwrap(), TitleUpdate::Changed(Some("New page".to_string())));
         assert_eq!(
             update_title(&json!({"WindowClosed": {"id": 2}}), &mut state).unwrap(),
-            Some(None)
+            TitleUpdate::Changed(None)
         );
         assert_eq!(
             update_title(&json!({"WindowFocusChanged": {"id": 1}}), &mut state).unwrap(),
-            Some(Some("Terminal".to_string()))
+            TitleUpdate::Changed(Some("Terminal".to_string()))
         );
         assert_eq!(
             update_title(&json!({"WindowFocusChanged": {"id": null}}), &mut state).unwrap(),
-            Some(None)
+            TitleUpdate::Changed(None)
         );
     }
 }

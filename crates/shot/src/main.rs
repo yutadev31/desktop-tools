@@ -1,9 +1,9 @@
+mod selector;
+
 use std::path::PathBuf;
 
 use clap::Parser;
 use shot::{Capturer, serve_clipboard};
-
-mod selector;
 
 #[derive(Debug, Parser)]
 #[command(name = "shot", about = "Capture a screenshot from a monitor")]
@@ -48,10 +48,12 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+
     if let Some(path) = cli.clipboard_daemon {
         serve_clipboard(&path)?;
         return Ok(());
     }
+
     if let Some(path) = cli.clipboard_daemon_temp {
         let result = serve_clipboard(&path);
         let _ = std::fs::remove_file(path);
@@ -63,6 +65,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let files = cli.files;
     let clipboard = cli.clipboard.unwrap_or(config.output.clipboard);
     let path_format = config.output.path_format;
+
     if files.is_empty() && path_format.is_none() && !clipboard {
         return Err(Box::new(shot::Error::NoOutputDestination));
     }
@@ -78,6 +81,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         let mut capturer = Capturer::new_for_monitor_selection()?;
         let monitor_names = capturer.monitor_names();
+
         let monitor = if cli.rofi {
             selector::rofi::select(&monitor_names)?
         } else if capturer.monitor_count() > 1 {
@@ -92,11 +96,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!();
             return Ok(());
         }
+
         capturer
     };
+
     capturer.set_output_files(files);
     capturer.set_path_format(path_format);
     capturer.set_clipboard(clipboard);
+
     if let Some(region) = cli.region {
         capturer.set_region(region)?;
     }
@@ -106,6 +113,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         capturer.capture_output()?;
     }
+
     Ok(())
 }
 
@@ -118,8 +126,10 @@ fn parse_region(value: &str) -> Result<(u32, u32, u32, u32), String> {
     let [x, y, width, height] = values.as_slice() else {
         return Err("expected four values: X,Y,WIDTH,HEIGHT".to_string());
     };
+
     if *width == 0 || *height == 0 {
         return Err("WIDTH and HEIGHT must be greater than zero".to_string());
     }
+
     Ok((*x, *y, *width, *height))
 }
