@@ -1640,7 +1640,6 @@ dependencies = [
 name = "rubar"
 version = "0.6.0"
 dependencies = [
- "cc",
  "chrono",
  "chrono-tz",
  "cosmic-text",
