@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`rudesktop` is a Rust monorepo for desktop software. The repository currently contains `cpst`, clipboard command-line tools; `rubar`, a configurable status bar for Wayland and X11; `shell-surface`, a reusable library for native desktop surfaces; and `shot`, a screenshot command-line tool. More applications and shared crates may be added to the workspace. Do not assume that repository-wide code or instructions belong only to `rubar`.
+`desktop-tools` is a Rust monorepo for desktop software. The repository currently contains `cpst`, clipboard command-line tools; `rubar`, a configurable status bar for Wayland and X11; `shell-surface`, a reusable library for native desktop surfaces; and `shot`, a screenshot command-line tool. More applications and shared crates may be added to the workspace. Do not assume that repository-wide code or instructions belong only to `rubar`.
 
 ## Repository Layout
 
