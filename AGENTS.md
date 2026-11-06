@@ -54,13 +54,5 @@ Follow [the shared Rust coding style](docs/coding-style.md) for every crate.
 
 ## Git
 
-After completing a task:
-
-1. Run the relevant tests and linters.
-2. Review the diff before committing.
-3. Commit only changes made for the current task.
-4. Use Conventional Commits for commit messages.
-5. Write commit messages in English.
-6. Do not push commits.
-7. Do not amend, rebase, reset, or otherwise rewrite existing commits unless explicitly requested.
-8. Do not include unrelated pre-existing working tree changes in the commit.
+- Do not run Git commands that modify the repository state unless explicitly instructed to do so.
+- At the end of the task, provide an English commit message in the chat following the Conventional Commits specification.
