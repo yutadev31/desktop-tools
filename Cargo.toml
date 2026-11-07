@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/desktop-icons", "crates/rubar", "crates/rumenu", "crates/shell-surface", "crates/shot"]
+members = ["crates/desktop-icons", "crates/rubar", "crates/rumenu"]
 
 [workspace.package]
 version = "0.6.0"
@@ -30,7 +30,7 @@ memmap2 = "0.9"
 resvg = "0.49.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-shell-surface.path = "crates/shell-surface"
+shell-surface = { git = "https://github.com/yutadev31/shell-surface.git", tag = "v0.1.0" }
 socket2 = "0.6"
 tempfile = "3"
 thiserror = "2"
